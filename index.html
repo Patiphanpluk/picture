@@ -30,7 +30,7 @@
     </script>
 
     <style>
-        body { font-family: 'Prompt', sans-serif; }
+        body { font-family: 'Prompt', sans-serif; overflow-x: hidden; }
         @keyframes scan-line {
             0% { top: 10%; }
             100% { top: 90%; }
@@ -38,25 +38,29 @@
         .animate-scan-line {
             animation: scan-line 2s linear infinite;
         }
-        @media print {
-            .no-print { display: none !important; }
-            .print-only { display: block !important; }
-        }
+        /* แก้ไขปัญหาเนื้อหาถูก Footer บัง (ยกระดับความสูง) */
+        main { padding-bottom: 200px; }
         #reader {
             width: 100% !important;
             border: none !important;
         }
         #reader video {
-            border-radius: 1.5rem;
+            border-radius: 2rem;
             object-fit: cover;
         }
+        .ticket-cutout {
+            background-image: radial-gradient(circle at 0 50%, transparent 15px, white 16px), 
+                              radial-gradient(circle at 100% 50%, transparent 15px, white 16px);
+        }
+        .custom-scrollbar::-webkit-scrollbar { width: 6px; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: #e2e8f0; border-radius: 10px; }
     </style>
 </head>
 <body class="bg-slate-50 text-slate-900 min-h-screen">
 
     <div id="app">
-        <div class="flex items-center justify-center min-h-screen">
-            <div class="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-indigo-600"></div>
+        <div class="flex items-center justify-center min-h-screen text-indigo-600">
+            <div class="animate-spin rounded-full h-12 w-12 border-t-4 border-indigo-600 border-opacity-20"></div>
         </div>
     </div>
 
@@ -64,7 +68,7 @@
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, doc, collection, onSnapshot, setDoc, addDoc, updateDoc, deleteDoc, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getFirestore, doc, collection, onSnapshot, setDoc, addDoc, updateDoc, deleteDoc, serverTimestamp, query, where } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         // --- Firebase Configuration ---
         const firebaseConfig = {
@@ -81,15 +85,23 @@
         const app = initializeApp(firebaseConfig);
         const auth = getAuth(app);
         const db = getFirestore(app);
-        const fbId = "booking-system-v5";
+        const fbId = "booking-system-v7"; // Update schema version
 
         // --- App State ---
         window.state = {
             user: null,
             studentId: localStorage.getItem('student_id') || '',
             isLoggedIn: !!localStorage.getItem('student_id'),
-            isAdmin: false,
-            settings: { maxHours: 2, startTime: "09:00", endTime: "18:00", availableDays: [1, 2, 3, 4, 5], startDate: "", endDate: "" },
+            isAdmin: localStorage.getItem('is_admin') === 'true',
+            settings: { 
+                projectName: "Project Lab 2024",
+                maxHoursPerPerson: 10,
+                startTime: "09:00", 
+                endTime: "18:00", 
+                availableDays: [1, 2, 3, 4, 5], 
+                startDate: new Date().toISOString().split('T')[0], 
+                endDate: "" 
+            },
             resources: [],
             bookings: [],
             selectedResource: null,
@@ -98,7 +110,8 @@
             view: 'selection',
             activeBookings: [],
             error: null,
-            showQRModal: null
+            showQRModal: null,
+            isScanning: false
         };
 
         let html5QrScanner = null;
@@ -135,18 +148,46 @@
         function showError(msg) {
             window.state.error = msg;
             render();
-            setTimeout(() => { window.state.error = null; render(); }, 5000);
+            setTimeout(() => { window.state.error = null; render(); }, 6000);
         }
 
         // --- Window Exposed Actions ---
         window.render = render;
-
         window.setView = (v) => { 
             window.state.view = v; 
             if (v !== 'scanner' && html5QrScanner) {
                 html5QrScanner.clear();
                 html5QrScanner = null;
+                window.state.isScanning = false;
             }
+            render(); 
+        };
+
+        window.handleLogin = (e) => {
+            e.preventDefault();
+            const input = document.getElementById('login_sid').value.trim();
+            if (input === "Admin123") {
+                window.state.isAdmin = true;
+                window.state.isLoggedIn = true;
+                window.state.studentId = "ADMIN";
+                localStorage.setItem('is_admin', 'true');
+            } else if (input.length >= 5) {
+                window.state.isAdmin = false;
+                window.state.isLoggedIn = true;
+                window.state.studentId = input;
+                localStorage.setItem('student_id', input);
+                localStorage.setItem('is_admin', 'false');
+            } else {
+                return showError("รหัสนักศึกษาไม่ถูกต้อง");
+            }
+            render();
+        };
+
+        window.logout = () => { 
+            localStorage.clear();
+            window.state.studentId = ''; 
+            window.state.isLoggedIn = false; 
+            window.state.isAdmin = false;
             render(); 
         };
 
@@ -157,33 +198,14 @@
             render(); 
         };
 
-        window.toggleAdmin = () => { window.state.isAdmin = !window.state.isAdmin; render(); };
-        
-        window.logout = () => { 
-            localStorage.removeItem('student_id'); 
-            window.state.studentId = ''; 
-            window.state.isLoggedIn = false; 
-            render(); 
-        };
-
-        window.handleLogin = (e) => {
-            e.preventDefault();
-            const id = document.getElementById('login_sid').value;
-            if (id.length < 5) return showError("รหัสนักศึกษาไม่ถูกต้อง");
-            window.state.studentId = id;
-            window.state.isLoggedIn = true;
-            localStorage.setItem('student_id', id);
-            render();
-        };
-
         window.toggleSlotSelection = (slot) => {
             const index = window.state.selectedSlots.indexOf(slot);
             if (index > -1) {
                 window.state.selectedSlots.splice(index, 1);
             } else {
-                const alreadyBookedCount = window.state.bookings.filter(b => b.studentId === window.state.studentId && b.date === window.state.selectedDate).length;
-                if (alreadyBookedCount + window.state.selectedSlots.length >= window.state.settings.maxHours) {
-                    return showError(`คุณจองครบโควตา ${window.state.settings.maxHours} ชม./วัน แล้ว`);
+                const alreadyBooked = window.state.bookings.filter(b => b.studentId === window.state.studentId).length;
+                if (alreadyBooked + window.state.selectedSlots.length >= window.state.settings.maxHoursPerPerson) {
+                    return showError(`โควตาเต็ม! คุณจองได้สูงสุด ${window.state.settings.maxHoursPerPerson} ชม. ต่อโปรเจกต์`);
                 }
                 window.state.selectedSlots.push(slot);
             }
@@ -199,8 +221,10 @@
                         resourceId: window.state.selectedResource.id,
                         resourceName: window.state.selectedResource.name,
                         date: window.state.selectedDate,
-                        slot,
+                        slot, // Format: "09:00"
                         studentId: window.state.studentId,
+                        email: `${window.state.studentId}@kmitl.ac.th`,
+                        status: 'booked',
                         createdAt: serverTimestamp()
                     };
                     const docRef = await addDoc(collection(db, 'artifacts', fbId, 'public', 'data', 'bookings'), bookingData);
@@ -211,27 +235,55 @@
                 window.state.view = 'pass';
                 render();
             } catch (err) {
-                showError("จองไม่สำเร็จ: " + err.message);
+                showError("การจองล้มเหลว: " + err.message);
             }
         };
 
-        window.initScanner = () => {
-            if (html5QrScanner) return;
-            html5QrScanner = new Html5QrcodeScanner("reader", { fps: 10, qrbox: 250 });
+        window.initScannerAutomatically = () => {
+            if (window.state.isScanning) return;
+            window.state.isScanning = true;
+            html5QrScanner = new Html5QrcodeScanner("reader", { 
+                fps: 20, 
+                qrbox: { width: 250, height: 250 },
+                rememberLastUsedCamera: true
+            });
             html5QrScanner.render((decodedText) => {
-                const targetResourceId = window.state.activeBookings[0]?.resourceId;
-                if (decodedText === targetResourceId) {
-                    html5QrScanner.clear().then(() => {
-                        window.verifyScanSuccess(targetResourceId);
-                    });
+                const targetId = window.state.activeBookings[0]?.resourceId;
+                if (decodedText === targetId) {
+                    // Time Check
+                    if (isCurrentTimeMatchingBooking()) {
+                        html5QrScanner.clear().then(() => {
+                            window.state.isScanning = false;
+                            window.processCheckIn(targetId);
+                        });
+                    } else {
+                        showError("ไม่สามารถเช็คอินได้: ยังไม่ถึงเวลาที่คุณจอง หรือเลยเวลาไปแล้ว");
+                    }
                 } else {
-                    showError("QR Code ไม่ถูกต้องสำหรับเครื่องนี้");
+                    showError("QR Code ไม่ถูกต้อง: อุปกรณ์นี้ไม่ใช่เครื่องที่คุณจองไว้");
                 }
             }, (err) => {});
         };
 
-        window.verifyScanSuccess = async (id) => {
-            await updateDoc(doc(db, 'artifacts', fbId, 'public', 'data', 'resources', id), {
+        const isCurrentTimeMatchingBooking = () => {
+            const now = new Date();
+            const today = now.toISOString().split('T')[0];
+            const currentHour = now.getHours();
+            
+            return window.state.activeBookings.some(b => {
+                const bHour = parseInt(b.slot.split(':')[0]);
+                return b.date === today && currentHour === bHour;
+            });
+        };
+
+        window.processCheckIn = async (resId) => {
+            for (const b of window.state.activeBookings) {
+                await updateDoc(doc(db, 'artifacts', fbId, 'public', 'data', 'bookings', b.id), {
+                    status: 'checked_in',
+                    checkInAt: new Date().toISOString()
+                });
+            }
+            await updateDoc(doc(db, 'artifacts', fbId, 'public', 'data', 'resources', resId), {
                 status: 'in_use',
                 currentStudent: window.state.studentId,
                 startedAt: new Date().toISOString()
@@ -239,59 +291,66 @@
             window.state.view = 'selection';
             window.state.selectedResource = null;
             window.state.activeBookings = [];
-            alert("เช็คอินสำเร็จ!");
+            alert("เช็คอินสำเร็จ! ระบบกำลังบันทึกประวัติการใช้งานของคุณ");
             render();
         };
 
-        window.stopUsage = async (id) => {
+        window.stopResourceUsage = async (id) => {
             await updateDoc(doc(db, 'artifacts', fbId, 'public', 'data', 'resources', id), {
                 status: 'idle', currentStudent: null, startedAt: null
             });
         };
 
-        window.saveAdminSettings = async (e) => {
+        window.saveProjectSettings = async (e) => {
             e.preventDefault();
             const f = new FormData(e.target);
             const days = DAYS_TH.map((_, i) => f.get(`day-${i}`) ? i : null).filter(x => x !== null);
             await setDoc(doc(db, 'artifacts', fbId, 'public', 'data', 'settings', 'global_config'), {
-                maxHours: parseInt(f.get('maxHours')),
+                projectName: f.get('projectName'),
+                maxHoursPerPerson: parseInt(f.get('maxHours')),
                 startTime: f.get('startTime'),
                 endTime: f.get('endTime'),
                 startDate: f.get('startDate'),
                 endDate: f.get('endDate'),
                 availableDays: days
             });
-            window.state.isAdmin = false;
+            alert("บันทึกการตั้งค่าโปรเจกต์เรียบร้อย");
+            window.state.isAdmin = true; // Stay in admin
             render();
         };
 
         window.addResource = async (e) => {
             e.preventDefault();
-            const name = e.target.resName.value;
+            const name = e.target.resName.value.trim();
+            if (!name) return;
             await addDoc(collection(db, 'artifacts', fbId, 'public', 'data', 'resources'), { name, status: 'idle' });
             e.target.reset();
         };
 
-        window.deleteBooking = async (id) => {
-            await deleteDoc(doc(db, 'artifacts', fbId, 'public', 'data', 'bookings', id));
+        window.deleteBookingItem = async (id) => {
+            if(confirm("ลบรายการจองนี้?")) await deleteDoc(doc(db, 'artifacts', fbId, 'public', 'data', 'bookings', id));
         };
 
-        window.openQRModal = (id, name) => {
-            window.state.showQRModal = { id, name };
-            render();
+        window.clearHistoryTotal = async () => {
+            if(confirm("ล้างประวัติการจองและเช็คอินทั้งหมด? (ไม่สามารถกู้คืนได้)")) {
+                for (const b of window.state.bookings) await deleteDoc(doc(db, 'artifacts', fbId, 'public', 'data', 'bookings', b.id));
+            }
         };
 
-        window.closeQRModal = () => {
-            window.state.showQRModal = null;
-            render();
+        window.clearHistoryByDay = async () => {
+            const date = prompt("ระบุวันที่ที่ต้องการล้าง (YYYY-MM-DD):");
+            if (date) {
+                const toDel = window.state.bookings.filter(b => b.date === date);
+                for (const b of toDel) await deleteDoc(doc(db, 'artifacts', fbId, 'public', 'data', 'bookings', b.id));
+                alert(`ลบรายการของวันที่ ${date} เรียบร้อย`);
+            }
         };
 
-        // --- Helpers ---
-        const isSlotTakenByOthers = (slot) => window.state.bookings.some(b => b.date === window.state.selectedDate && b.slot === slot && b.resourceId === window.state.selectedResource.id && b.studentId !== window.state.studentId);
-        const isSlotTakenByMe = (slot) => window.state.bookings.some(b => b.date === window.state.selectedDate && b.slot === slot && b.resourceId === window.state.selectedResource.id && b.studentId === window.state.studentId);
-        const getBookingId = (slot) => window.state.bookings.find(b => b.date === window.state.selectedDate && b.slot === slot && b.resourceId === window.state.selectedResource.id)?.id;
-        
-        const isDateAvailable = () => {
+        window.openQRModal = (id, name) => { window.state.showQRModal = { id, name }; render(); };
+        window.closeQRModal = () => { window.state.showQRModal = null; render(); };
+
+        // --- Render Helpers ---
+        const isDateInService = () => {
             const dateObj = new Date(window.state.selectedDate);
             const dayOfWeek = dateObj.getDay();
             const isInRange = (!window.state.settings.startDate || window.state.selectedDate >= window.state.settings.startDate) &&
@@ -307,28 +366,32 @@
             } else {
                 appDiv.innerHTML = `
                     ${renderHeader()}
-                    <main class="max-w-2xl mx-auto px-6 py-8">
+                    <main class="max-w-3xl mx-auto px-6 py-10">
                         ${window.state.error ? renderError() : ''}
-                        ${window.state.isAdmin ? renderAdmin() : renderUserView()}
+                        ${window.state.isAdmin ? renderAdminView() : renderUserView()}
                     </main>
                     ${renderFooter()}
                     ${window.state.showQRModal ? renderQRModal() : ''}
                 `;
             }
             lucide.createIcons();
-            if (window.state.view === 'scanner') setTimeout(window.initScanner, 100);
+            if (window.state.view === 'scanner') setTimeout(window.initScannerAutomatically, 100);
         }
 
         function renderLogin() {
             return `
                 <div class="min-h-screen flex items-center justify-center p-6 text-center">
-                    <div class="max-w-md w-full bg-white rounded-[2.5rem] p-10 shadow-xl border border-slate-100">
-                        <div class="w-20 h-20 bg-indigo-600 rounded-3xl flex items-center justify-center text-white mx-auto mb-8 shadow-lg shadow-indigo-100"><i data-lucide="scan" size="40"></i></div>
-                        <h1 class="text-3xl font-black text-slate-800 mb-2 font-sans">SmartLab</h1>
-                        <p class="text-slate-400 text-sm font-medium mb-8">เข้าสู่ระบบจองเครื่องมือวิทยาศาสตร์</p>
-                        <form onsubmit="handleLogin(event)" class="space-y-4">
-                            <input id="login_sid" type="text" placeholder="รหัสนักศึกษา" class="w-full p-4 rounded-2xl bg-slate-50 border border-slate-200 text-lg font-bold outline-none focus:ring-2 focus:ring-indigo-500" required>
-                            <button type="submit" class="w-full py-4 bg-indigo-600 text-white font-black rounded-2xl shadow-lg hover:bg-indigo-700 transition-all">เริ่มต้นใช้งาน</button>
+                    <div class="max-w-md w-full bg-white rounded-[3rem] p-12 shadow-2xl border border-slate-100 animate-in fade-in zoom-in duration-500">
+                        <div class="w-24 h-24 bg-indigo-600 rounded-[2.5rem] flex items-center justify-center text-white mx-auto mb-8 shadow-xl shadow-indigo-100"><i data-lucide="shield-check" size="48"></i></div>
+                        <h1 class="text-4xl font-black text-slate-800 mb-2">SmartLab</h1>
+                        <p class="text-slate-400 text-sm font-medium mb-12 tracking-widest uppercase">ระบบจัดการเครื่องมือวิจัย</p>
+                        <form onsubmit="handleLogin(event)" class="space-y-6">
+                            <div class="text-left space-y-2">
+                                <label class="text-[10px] font-black uppercase text-slate-400 ml-4 tracking-[0.2em]">Identification</label>
+                                <input id="login_sid" type="text" placeholder="รหัสนักศึกษา หรือ รหัสแอดมิน" class="w-full p-6 rounded-[1.5rem] bg-slate-50 border-2 border-slate-100 text-xl font-bold outline-none focus:border-indigo-500 transition-all text-center" required>
+                            </div>
+                            <button type="submit" class="w-full py-5 bg-indigo-600 text-white font-black rounded-[1.5rem] shadow-xl hover:bg-indigo-700 active:scale-95 transition-all text-lg border-b-4 border-indigo-800">เข้าสู่ระบบ</button>
+                            <p class="text-[10px] text-slate-300 font-bold uppercase tracking-widest mt-6">KMITL Engineering • 2024</p>
                         </form>
                     </div>
                 </div>
@@ -337,17 +400,17 @@
 
         function renderHeader() {
             return `
-                <header class="bg-white border-b border-slate-200 sticky top-0 z-50">
-                    <div class="max-w-2xl mx-auto px-6 h-16 flex items-center justify-between">
-                        <div class="flex items-center gap-2 cursor-pointer" onclick="setView('selection'); window.state.selectedResource=null; window.state.activeBookings=[]; render();">
-                            <div class="w-8 h-8 bg-indigo-600 rounded-lg flex items-center justify-center text-white"><i data-lucide="activity" size="18"></i></div>
-                            <h1 class="font-bold text-lg tracking-tight">SmartLab</h1>
+                <header class="bg-white/80 backdrop-blur-xl border-b border-slate-100 sticky top-0 z-50">
+                    <div class="max-w-3xl mx-auto px-6 h-20 flex items-center justify-between">
+                        <div class="flex items-center gap-3 cursor-pointer group" onclick="setView('selection'); window.state.selectedResource=null; render();">
+                            <div class="w-11 h-11 bg-indigo-600 rounded-2xl flex items-center justify-center text-white shadow-lg shadow-indigo-100 active:scale-90 transition-transform"><i data-lucide="binary" size="22"></i></div>
+                            <div>
+                                <h1 class="font-black text-xl leading-none text-slate-800">SmartLab</h1>
+                                <p class="text-[9px] font-black text-slate-400 uppercase tracking-widest mt-1">${window.state.settings.projectName}</p>
+                            </div>
                         </div>
-                        <div class="flex items-center gap-3">
-                            <button onclick="toggleAdmin()" class="px-4 py-1.5 rounded-full text-[10px] font-black uppercase tracking-wider transition-all border ${window.state.isAdmin ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-slate-100 text-slate-500'}">
-                                ${window.state.isAdmin ? 'ปิดโหมดแอดมิน' : 'โหมดแอดมิน'}
-                            </button>
-                            <button onclick="logout()" class="p-2 text-slate-400 hover:text-red-500"><i data-lucide="stop-circle" size="18"></i></button>
+                        <div class="flex items-center gap-4">
+                            <button onclick="logout()" class="p-3 bg-slate-100 text-slate-400 hover:text-red-500 rounded-2xl transition-all active:scale-90"><i data-lucide="power" size="20"></i></button>
                         </div>
                     </div>
                 </header>
@@ -356,37 +419,45 @@
 
         function renderUserView() {
             if (window.state.view === 'scanner') return renderScanner();
-            if (window.state.view === 'pass') return renderPass();
-            if (!window.state.selectedResource) return renderResourceSelection();
-            return renderCalendar();
+            if (window.state.view === 'pass') return renderReceipt();
+            if (!window.state.selectedResource) return renderResourceMenu();
+            return renderBookingGrid();
         }
 
-        function renderResourceSelection() {
+        function renderResourceMenu() {
             return `
-                <div class="space-y-6">
-                    <div class="bg-indigo-600 p-8 rounded-[2.5rem] text-white shadow-xl relative overflow-hidden mb-10">
-                        <h2 class="text-3xl font-black mb-1">Std. ${window.state.studentId}</h2>
-                        <p class="text-indigo-200 text-xs font-bold uppercase tracking-widest">ยินดีต้อนรับเข้าสู่ระบบจอง</p>
+                <div class="space-y-8 animate-in fade-in duration-500">
+                    <div class="bg-indigo-600 p-10 rounded-[3rem] text-white shadow-2xl relative overflow-hidden shadow-indigo-100">
+                        <div class="absolute -top-10 -right-10 w-48 h-48 bg-white/10 rounded-full blur-3xl"></div>
+                        <p class="text-[10px] font-black uppercase tracking-[0.2em] opacity-60 mb-2">Authenticated Student</p>
+                        <h2 class="text-4xl font-black mb-1">${window.state.studentId}</h2>
+                        <div class="flex items-center gap-2 text-indigo-200 text-[10px] font-black mt-8 bg-white/10 w-fit px-4 py-2 rounded-2xl border border-white/5 uppercase tracking-widest">
+                            <div class="w-2 h-2 bg-green-400 rounded-full animate-pulse shadow-[0_0_10px_#4ade80]"></div>
+                            <span>Online • Real-time Monitoring</span>
+                        </div>
                     </div>
-                    <h3 class="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-2">รายการเครื่องมือ</h3>
+                    
+                    <h3 class="text-[11px] font-black text-slate-400 uppercase tracking-[0.3em] ml-2 mb-2">เลือกอุปกรณ์ที่ต้องการใช้งาน</h3>
                     <div class="grid grid-cols-1 gap-4">
                         ${window.state.resources.map(res => `
-                            <button onclick="selectResource('${res.id}', '${res.name}')" class="group bg-white p-5 rounded-[2rem] border shadow-sm hover:shadow-xl transition-all text-left flex items-center justify-between">
-                                <div class="flex items-center gap-4">
-                                    <div class="w-14 h-14 rounded-2xl flex items-center justify-center ${res.status === 'in_use' ? 'bg-orange-50 text-orange-500' : 'bg-slate-50 text-slate-400 group-hover:bg-indigo-600 group-hover:text-white'}">
-                                        <i data-lucide="monitor" size="28"></i>
+                            <button onclick="selectResource('${res.id}', '${res.name}')" class="group bg-white p-6 rounded-[2.5rem] border border-slate-100 shadow-sm hover:shadow-2xl hover:border-indigo-200 transition-all text-left flex items-center justify-between">
+                                <div class="flex items-center gap-5">
+                                    <div class="w-16 h-16 rounded-[1.5rem] flex items-center justify-center transition-all ${res.status === 'in_use' ? 'bg-orange-50 text-orange-500' : 'bg-slate-50 text-slate-400 group-hover:bg-indigo-600 group-hover:text-white'} shadow-inner">
+                                        <i data-lucide="cpu" size="32"></i>
                                     </div>
                                     <div>
-                                        <h3 class="font-bold text-lg text-slate-800">${res.name}</h3>
-                                        <div class="flex items-center gap-2 mt-1">
+                                        <h3 class="font-bold text-xl text-slate-800">${res.name}</h3>
+                                        <div class="flex items-center gap-2 mt-1.5">
                                             <div class="w-2 h-2 rounded-full ${res.status === 'in_use' ? 'bg-orange-400 animate-pulse' : 'bg-green-400'}"></div>
-                                            <span class="text-[10px] font-bold uppercase ${res.status === 'in_use' ? 'text-orange-500' : 'text-green-500'}">
-                                                ${res.status === 'in_use' ? `In Use by ${res.currentStudent}` : 'Available'}
+                                            <span class="text-[10px] font-black uppercase tracking-widest ${res.status === 'in_use' ? 'text-orange-500' : 'text-green-500'}">
+                                                ${res.status === 'in_use' ? `กำลังใช้งานโดย ${res.currentStudent}` : 'ว่าง (Available)'}
                                             </span>
                                         </div>
                                     </div>
                                 </div>
-                                <i data-lucide="chevron-right" size="20" class="text-slate-200 group-hover:text-indigo-600"></i>
+                                <div class="w-12 h-12 rounded-full bg-slate-50 flex items-center justify-center text-slate-300 group-hover:bg-indigo-50 group-hover:text-indigo-600 transition-all active:scale-90">
+                                    <i data-lucide="arrow-right" size="24"></i>
+                                </div>
                             </button>
                         `).join('')}
                     </div>
@@ -394,74 +465,94 @@
             `;
         }
 
-        function renderCalendar() {
-            const start = parseInt(window.state.settings.startTime.split(':')[0]);
-            const end = parseInt(window.state.settings.endTime.split(':')[0]);
+        function renderBookingGrid() {
+            const startH = parseInt(window.state.settings.startTime.split(':')[0]);
+            const endH = parseInt(window.state.settings.endTime.split(':')[0]);
             const slots = [];
-            for(let i=start; i<end; i++) slots.push(`${i.toString().padStart(2, '0')}:00`);
-            const currentSelectedCount = window.state.bookings.filter(b => b.studentId === window.state.studentId && b.date === window.state.selectedDate).length;
+            for(let i=startH; i<endH; i++) slots.push(`${i.toString().padStart(2, '0')}:00`);
+            
+            const bookedHours = window.state.bookings.filter(b => b.studentId === window.state.studentId).length;
 
             return `
-                <div class="space-y-6">
-                    <button onclick="setView('selection'); window.state.selectedResource=null; render();" class="flex items-center gap-2 text-slate-400 hover:text-indigo-600 text-[10px] font-black uppercase"><i data-lucide="chevron-left" size="16"></i> กลับ</button>
-                    <div class="bg-white p-6 rounded-[2.5rem] border shadow-sm space-y-6">
-                        <div class="flex items-center gap-3 text-indigo-600"><i data-lucide="monitor" size="20"></i><h2 class="text-xl font-bold text-slate-800">${window.state.selectedResource.name}</h2></div>
-                        <input type="date" value="${window.state.selectedDate}" onchange="window.state.selectedDate=this.value; window.state.selectedSlots=[]; render();" class="w-full p-4 rounded-2xl bg-slate-50 border font-bold text-slate-800 outline-none">
+                <div class="space-y-6 animate-in slide-in-from-right-4 duration-300">
+                    <button onclick="setView('selection'); window.state.selectedResource=null; render();" class="flex items-center gap-2 bg-white px-8 py-4 rounded-full border border-slate-100 text-slate-400 hover:text-indigo-600 text-[10px] font-black uppercase tracking-[0.2em] shadow-sm active:scale-95 transition-all"><i data-lucide="chevron-left" size="18"></i> ย้อนกลับไปเลือกเครื่อง</button>
+                    
+                    <div class="bg-white p-10 rounded-[3rem] border border-slate-100 shadow-xl space-y-10">
+                        <div class="flex items-center gap-5 text-indigo-600">
+                            <div class="w-14 h-14 bg-indigo-50 rounded-2xl flex items-center justify-center shadow-inner"><i data-lucide="calendar-check-2" size="28"></i></div>
+                            <div>
+                                <h2 class="text-3xl font-black text-slate-800 tracking-tight">${window.state.selectedResource.name}</h2>
+                                <p class="text-[10px] font-bold text-slate-400 uppercase tracking-[0.3em]">ระบบลงทะเบียนจองล่วงหน้า</p>
+                            </div>
+                        </div>
                         
-                        ${!isDateAvailable() ? `
-                            <div class="p-10 bg-orange-50 border border-orange-100 rounded-3xl text-center">
-                                <i data-lucide="alert-circle" size="32" class="mx-auto text-orange-400 mb-2"></i>
-                                <p class="font-bold text-orange-700">ไม่เปิดให้บริการในวันที่เลือก</p>
+                        <div class="space-y-3">
+                            <label class="text-[10px] font-black uppercase text-slate-400 ml-4 block tracking-widest">เลือกวันที่ใช้บริการ</label>
+                            <input type="date" value="${window.state.selectedDate}" onchange="window.state.selectedDate=this.value; window.state.selectedSlots=[]; render();" class="w-full p-6 rounded-[2rem] bg-slate-50 border-2 border-slate-100 font-black text-2xl text-slate-800 outline-none focus:border-indigo-500 transition-all shadow-inner">
+                        </div>
+
+                        ${!isDateInService() ? `
+                            <div class="p-16 bg-orange-50 border-2 border-orange-100 rounded-[3rem] text-center space-y-4">
+                                <i data-lucide="calendar-x" size="64" class="mx-auto text-orange-300 opacity-60"></i>
+                                <p class="font-black text-2xl text-orange-700">ไม่อยู่ในช่วงวันให้บริการ</p>
+                                <p class="text-sm text-orange-600 font-medium leading-relaxed opacity-80">โปรเจกต์นี้ไม่ได้เปิดให้จองในวันหรือช่วงเวลาที่คุณระบุ <br/>กรุณาตรวจสอบวันทำการจากหน้าแรก</p>
                             </div>
                         ` : `
-                            <div class="bg-indigo-600 p-6 rounded-3xl text-white shadow-lg">
-                                <div class="flex justify-between items-end mb-2">
-                                    <span class="text-[10px] font-bold uppercase opacity-60">Quota Today</span>
-                                    <span class="text-3xl font-black">${currentSelectedCount + window.state.selectedSlots.length} / ${window.state.settings.maxHours}</span>
+                            <div class="bg-indigo-600 p-8 rounded-[2.5rem] text-white shadow-xl shadow-indigo-100 relative overflow-hidden">
+                                <div class="flex justify-between items-end mb-4">
+                                    <span class="text-[11px] font-black uppercase tracking-widest opacity-60">Project Total Quota Usage</span>
+                                    <span class="text-4xl font-black">${bookedHours + window.state.selectedSlots.length} <span class="text-xl opacity-40">/ ${window.state.settings.maxHoursPerPerson} hr</span></span>
                                 </div>
-                                <div class="w-full h-1 bg-white/20 rounded-full overflow-hidden">
-                                    <div class="h-full bg-white transition-all" style="width: ${((currentSelectedCount + window.state.selectedSlots.length) / window.state.settings.maxHours) * 100}%"></div>
+                                <div class="w-full h-3 bg-white/20 rounded-full overflow-hidden shadow-inner">
+                                    <div class="h-full bg-white transition-all duration-1000 shadow-[0_0_15px_#fff]" style="width: ${((bookedHours + window.state.selectedSlots.length) / window.state.settings.maxHoursPerPerson) * 100}%"></div>
                                 </div>
                             </div>
 
-                            <div class="grid grid-cols-1 gap-3">
+                            <div class="grid grid-cols-1 gap-4">
                                 ${slots.map(slot => {
-                                    const isOthers = isSlotTakenByOthers(slot);
-                                    const isMine = isSlotTakenByMe(slot);
+                                    const bOthers = window.state.bookings.find(b => b.date === window.state.selectedDate && b.slot === slot && b.resourceId === window.state.selectedResource.id && b.studentId !== window.state.studentId);
+                                    const bMine = window.state.bookings.find(b => b.date === window.state.selectedDate && b.slot === slot && b.resourceId === window.state.selectedResource.id && b.studentId === window.state.studentId);
                                     const isSelecting = window.state.selectedSlots.includes(slot);
-                                    let btnClass = "bg-white border-slate-100 text-slate-600 hover:border-indigo-300";
-                                    let statusText = "ว่าง";
+                                    
+                                    let btnClass = "bg-white border-slate-100 text-slate-600 hover:border-indigo-300 hover:bg-slate-50 shadow-sm";
+                                    let statusText = "ว่าง (Available)";
                                     let action = `toggleSlotSelection('${slot}')`;
 
-                                    if (isOthers) {
+                                    if (bOthers) {
                                         btnClass = "bg-slate-100 border-slate-100 text-slate-300 opacity-40 cursor-not-allowed";
-                                        statusText = "ไม่ว่าง";
+                                        statusText = `จองแล้วโดย Std:${bOthers.studentId.slice(-4)}`;
                                         action = "";
-                                    } else if (isMine) {
-                                        btnClass = "bg-green-50 border-green-500 text-green-700";
-                                        statusText = "จองแล้ว (คลิกเพื่อยกเลิก)";
-                                        action = `deleteBooking('${getBookingId(slot)}')`;
+                                    } else if (bMine) {
+                                        btnClass = "bg-green-50 border-green-500 text-green-700 shadow-sm";
+                                        statusText = "จองแล้ว (คลิกที่นี่เพื่อยกเลิก)";
+                                        action = `deleteBookingItem('${bMine.id}')`;
                                     } else if (isSelecting) {
-                                        btnClass = "bg-indigo-600 border-indigo-600 text-white shadow-lg";
-                                        statusText = "กำลังเลือก";
+                                        btnClass = "bg-indigo-600 border-indigo-600 text-white shadow-2xl scale-[1.03] z-10 ring-4 ring-indigo-200";
+                                        statusText = "เลือกอยู่ (Selected)";
                                         action = `toggleSlotSelection('${slot}')`;
                                     }
 
                                     return `
-                                        <button onclick="${action}" class="relative p-5 rounded-2xl border-2 transition-all flex justify-between items-center ${btnClass}">
+                                        <button onclick="${action}" class="relative p-7 rounded-[2rem] border-2 transition-all flex justify-between items-center ${btnClass}">
                                             <div class="text-left">
-                                                <span class="text-lg font-black">${slot} - ${slot.split(':')[0]}:59</span>
-                                                <p class="text-[10px] font-bold uppercase opacity-70">${statusText}</p>
+                                                <span class="text-2xl font-black">${slot} - ${slot.split(':')[0]}:59</span>
+                                                <p class="text-[10px] font-black uppercase tracking-wider mt-1.5 opacity-80">${statusText}</p>
                                             </div>
-                                            ${isMine || isSelecting ? '<i data-lucide="check-circle-2" class="w-6 h-6"></i>' : '<i data-lucide="plus" class="w-6 h-6 opacity-20"></i>'}
+                                            <div class="w-12 h-12 rounded-full flex items-center justify-center ${bMine || isSelecting ? 'bg-white/20' : 'bg-slate-100'} shadow-inner transition-transform active:scale-90">
+                                                ${bMine || isSelecting ? '<i data-lucide="check" size="28"></i>' : '<i data-lucide="plus" size="28" class="opacity-30"></i>'}
+                                            </div>
                                         </button>
                                     `;
                                 }).join('')}
                             </div>
+
                             ${window.state.selectedSlots.length > 0 ? `
-                                <button onclick="confirmBooking()" class="w-full py-5 bg-indigo-600 text-white font-black rounded-3xl shadow-xl shadow-indigo-100 animate-in fade-in slide-in-from-bottom-4 transition-all active:scale-95">
-                                    ยืนยันการจอง (${window.state.selectedSlots.length} ช่วงเวลา)
-                                </button>
+                                <div class="fixed bottom-32 left-0 right-0 px-8 z-40 max-w-3xl mx-auto">
+                                    <button onclick="confirmBooking()" class="w-full py-6 bg-indigo-600 text-white font-black rounded-[2.5rem] shadow-[0_25px_60px_rgba(79,70,229,0.4)] animate-in slide-in-from-bottom-10 transition-all active:scale-95 text-2xl flex items-center justify-center gap-4 border-t-4 border-indigo-400">
+                                        <i data-lucide="lock" size="28"></i>
+                                        ยืนยันการจองทั้งสิ้น ${window.state.selectedSlots.length} ชม.
+                                    </button>
+                                </div>
                             ` : ''}
                         `}
                     </div>
@@ -469,28 +560,43 @@
             `;
         }
 
-        function renderPass() {
+        function renderReceipt() {
             const dateStr = window.state.activeBookings[0]?.date;
-            const resourceName = window.state.activeBookings[0]?.resourceName;
-            const slotsStr = window.state.activeBookings.map(b => b.slot).join(', ');
+            const resName = window.state.activeBookings[0]?.resourceName;
+
             return `
-                <div class="max-w-md mx-auto py-8">
-                    <div class="bg-white rounded-[2.5rem] overflow-hidden shadow-2xl border border-slate-100">
-                        <div class="bg-indigo-600 p-8 text-white text-center">
-                            <i data-lucide="ticket" size="48" class="mx-auto mb-4 opacity-50"></i>
-                            <h2 class="text-2xl font-black mb-1 font-sans">ใบยืนยันการจอง</h2>
-                            <p class="text-indigo-200 text-xs font-bold uppercase tracking-widest">SmartLab Booking Pass</p>
+                <div class="max-w-md mx-auto py-4 animate-in zoom-in duration-500">
+                    <div class="bg-white rounded-[4rem] overflow-hidden shadow-2xl border border-slate-100 relative">
+                        <div class="bg-indigo-600 p-12 text-white text-center relative overflow-hidden">
+                            <div class="absolute inset-0 bg-[url('https://www.transparenttextures.com/patterns/carbon-fibre.png')] opacity-10"></div>
+                            <div class="w-20 h-20 bg-white/20 rounded-[2rem] flex items-center justify-center mx-auto mb-6 backdrop-blur-md border border-white/20 shadow-xl"><i data-lucide="check-circle" size="44"></i></div>
+                            <h2 class="text-4xl font-black mb-1">จองสำเร็จ</h2>
+                            <p class="text-indigo-200 text-[10px] font-black uppercase tracking-[0.4em]">Official Research Booking</p>
                         </div>
-                        <div class="p-8 space-y-6 text-center sm:text-left">
-                            <div class="grid grid-cols-1 gap-4">
-                                <div><p class="text-[10px] font-bold text-slate-400 uppercase mb-1">เครื่องมือ</p><p class="text-xl font-bold">${resourceName}</p></div>
-                                <div><p class="text-[10px] font-bold text-slate-400 uppercase mb-1">รหัสนักศึกษา</p><p class="text-xl font-bold">${window.state.studentId}</p></div>
-                                <div><p class="text-[10px] font-bold text-slate-400 uppercase mb-1">วันที่</p><p class="text-lg font-bold">${dateStr}</p></div>
-                                <div><p class="text-[10px] font-bold text-slate-400 uppercase mb-1">ช่วงเวลาที่จอง</p><p class="text-lg font-bold text-indigo-600">${slotsStr}</p></div>
+                        <div class="p-10 space-y-8 ticket-cutout">
+                            <div class="space-y-8">
+                                <div class="pb-6 border-b-2 border-slate-50"><p class="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Equipment</p><p class="text-3xl font-black text-slate-800 leading-tight">${resName}</p></div>
+                                <div class="grid grid-cols-2 gap-8">
+                                    <div><p class="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Holder ID</p><p class="text-xl font-black text-slate-800">${window.state.studentId}</p></div>
+                                    <div><p class="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Date</p><p class="text-xl font-black text-slate-800">${dateStr}</p></div>
+                                </div>
+                                <div class="text-center bg-slate-50 p-6 rounded-[2rem] border border-slate-100">
+                                    <p class="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3">จองช่วงเวลา</p>
+                                    <div class="flex flex-wrap justify-center gap-2">
+                                        ${window.state.activeBookings.map(b => `<span class="bg-indigo-600 text-white px-4 py-1.5 rounded-full text-xs font-black shadow-sm">${b.slot}</span>`).join('')}
+                                    </div>
+                                    <div class="mt-8 flex items-center gap-3 justify-center text-blue-600 bg-white p-4 rounded-2xl shadow-sm border border-blue-50">
+                                        <i data-lucide="image" size="20"></i>
+                                        <p class="text-[9px] font-bold uppercase tracking-wider text-left">ส่งสรุปหลักฐานพร้อมรูปเวลาไปที่ <br/><span class="text-xs font-black">${window.state.studentId}@kmitl.ac.th</span></p>
+                                    </div>
+                                </div>
                             </div>
-                            <div class="pt-6 border-t border-dashed border-slate-200">
-                                <button onclick="setView('scanner')" class="w-full py-4 bg-slate-900 text-white font-black rounded-2xl flex items-center justify-center gap-2"><i data-lucide="camera" size="20"></i> สแกน QR หน้าเครื่องเพื่อใช้งาน</button>
-                                <button onclick="setView('selection'); window.state.activeBookings=[]; render();" class="w-full mt-4 text-xs font-bold text-slate-400">กลับหน้าหลัก</button>
+                            <div class="pt-10 border-t-4 border-dashed border-slate-100">
+                                <button onclick="setView('scanner')" class="w-full py-6 bg-slate-900 text-white font-black rounded-[2.5rem] flex items-center justify-center gap-4 shadow-xl hover:bg-black transition-all active:scale-95 group">
+                                    <i data-lucide="qr-code" size="28" class="group-hover:rotate-12 transition-transform"></i> 
+                                    สแกนหน้าเครื่องเพื่อเช็คอิน
+                                </button>
+                                <button onclick="setView('selection'); window.state.activeBookings=[]; render();" class="w-full mt-8 text-[11px] font-black text-slate-400 uppercase tracking-[0.3em] hover:text-indigo-600 transition-colors">ย้อนกลับไปหน้าหลัก</button>
                             </div>
                         </div>
                     </div>
@@ -500,67 +606,151 @@
 
         function renderScanner() {
             return `
-                <div class="fixed inset-0 bg-slate-900 z-[100] flex flex-col items-center justify-center p-6 text-white overflow-hidden">
+                <div class="fixed inset-0 bg-slate-900 z-[100] flex flex-col items-center justify-center p-6 text-white overflow-hidden animate-in fade-in duration-500">
                     <div class="w-full max-w-md text-center">
-                        <div class="mb-8">
-                            <h2 class="text-2xl font-black mb-2">สแกนรหัสเครื่องมือ</h2>
-                            <p class="text-slate-400 text-sm">สแกน QR Code ที่แปะอยู่บนเครื่องเพื่อเริ่มทำงาน</p>
+                        <div class="mb-12">
+                            <h2 class="text-4xl font-black mb-2 tracking-tight">ยืนยันการใช้งาน</h2>
+                            <p class="text-slate-400 text-sm font-medium">นำกล้องไปสแกน QR Code ที่หน้าอุปกรณ์ของคุณ</p>
                         </div>
-                        <div class="relative w-full aspect-square bg-black rounded-[2rem] overflow-hidden border-4 border-indigo-500/30">
+                        
+                        <div class="relative w-full aspect-square bg-black rounded-[3.5rem] overflow-hidden border-[10px] border-white/5 shadow-2xl">
                             <div id="reader" class="w-full h-full"></div>
-                            <div class="absolute inset-0 pointer-events-none border-[3rem] border-black/20"></div>
-                            <div class="absolute top-1/2 left-0 right-0 h-0.5 bg-indigo-500 shadow-[0_0_15px_rgba(99,102,241,0.8)] animate-scan-line"></div>
+                            <div class="absolute inset-0 pointer-events-none border-[5rem] border-slate-900/60 z-10"></div>
+                            <div class="absolute top-1/2 left-0 right-0 h-1 bg-indigo-500 shadow-[0_0_35px_rgba(99,102,241,1)] animate-scan-line z-20"></div>
                         </div>
-                        <div class="mt-12 space-y-4">
-                            <p class="text-[10px] font-bold uppercase tracking-widest text-slate-500 italic">Target Device ID: ${window.state.activeBookings[0]?.resourceId}</p>
-                            <button onclick="setView('pass')" class="w-full py-4 bg-white/10 text-white font-bold rounded-2xl">ยกเลิก</button>
+
+                        <div class="mt-14 space-y-8">
+                            <div class="bg-indigo-600/20 border-2 border-indigo-500/20 p-6 rounded-[2rem] backdrop-blur-xl animate-pulse">
+                                <p class="text-[10px] font-black uppercase tracking-[0.4em] text-indigo-400 mb-2">Target Verification</p>
+                                <p class="font-black text-2xl">${window.state.activeBookings[0]?.resourceName}</p>
+                            </div>
+                            <button onclick="setView('pass')" class="w-full py-5 bg-white/5 text-white font-black rounded-[2rem] backdrop-blur-md border border-white/10 active:scale-95 transition-all uppercase tracking-widest text-xs border-b-4 border-white/10">ยกเลิกการสแกน</button>
                         </div>
                     </div>
                 </div>
             `;
         }
 
-        function renderAdmin() {
+        function renderAdminView() {
             return `
-                <div class="space-y-6">
-                    <section class="bg-white p-6 rounded-3xl border shadow-sm">
-                        <h2 class="text-lg font-bold mb-4 text-indigo-600 flex items-center gap-2"><i data-lucide="settings" size="20"></i> ตั้งค่าระบบ</h2>
-                        <form onsubmit="saveAdminSettings(event)" class="space-y-4">
-                            <div class="grid grid-cols-2 gap-4">
-                                <input name="startTime" type="time" value="${window.state.settings.startTime}" class="p-3 rounded-xl bg-slate-50 border text-sm" required>
-                                <input name="endTime" type="time" value="${window.state.settings.endTime}" class="p-3 rounded-xl bg-slate-50 border text-sm" required>
+                <div class="space-y-10 animate-in fade-in slide-in-from-bottom-8 duration-700">
+                    <!-- Project Configuration -->
+                    <section class="bg-white p-12 rounded-[3.5rem] border border-slate-100 shadow-2xl space-y-10">
+                        <div class="flex items-center gap-4"><i data-lucide="layers" class="text-indigo-600" size="40"></i><h2 class="text-3xl font-black tracking-tight">ตั้งค่าโปรเจกต์</h2></div>
+                        <form onsubmit="saveProjectSettings(event)" class="grid grid-cols-1 md:grid-cols-2 gap-10">
+                            <div class="md:col-span-2 space-y-3">
+                                <label class="text-[11px] font-black uppercase text-slate-400 ml-4 block tracking-[0.2em]">Project Title</label>
+                                <input name="projectName" type="text" value="${window.state.settings.projectName}" class="w-full p-6 rounded-2xl bg-slate-50 border-2 border-slate-100 font-bold outline-none focus:border-indigo-500 text-xl" required>
                             </div>
-                            <div class="grid grid-cols-2 gap-4">
-                                <input name="startDate" type="date" value="${window.state.settings.startDate}" class="p-3 rounded-xl bg-slate-50 border text-sm">
-                                <input name="endDate" type="date" value="${window.state.settings.endDate}" class="p-3 rounded-xl bg-slate-50 border text-sm">
+                            <div class="space-y-3">
+                                <label class="text-[11px] font-black uppercase text-slate-400 ml-4 block tracking-[0.2em]">Project Duration (Start)</label>
+                                <input name="startDate" type="date" value="${window.state.settings.startDate}" class="w-full p-6 rounded-2xl bg-slate-50 border-2 border-slate-100 font-bold text-lg">
                             </div>
-                            <div class="flex flex-wrap gap-2">
-                                ${DAYS_TH.map((d, i) => `
-                                    <label class="flex items-center gap-1 bg-slate-50 px-2 py-1 rounded-lg border text-[10px] font-bold">
-                                        <input type="checkbox" name="day-${i}" ${window.state.settings.availableDays.includes(i) ? 'checked' : ''}> ${d}
-                                    </label>
-                                `).join('')}
+                            <div class="space-y-3">
+                                <label class="text-[11px] font-black uppercase text-slate-400 ml-4 block tracking-[0.2em]">Project Duration (End)</label>
+                                <input name="endDate" type="date" value="${window.state.settings.endDate}" class="w-full p-6 rounded-2xl bg-slate-50 border-2 border-slate-100 font-bold text-lg">
                             </div>
-                            <input name="maxHours" type="number" value="${window.state.settings.maxHours}" class="w-full p-3 rounded-xl bg-slate-50 border text-sm" required>
-                            <button type="submit" class="w-full py-3 bg-indigo-600 text-white font-bold rounded-xl">บันทึกการตั้งค่า</button>
+                            <div class="space-y-3">
+                                <label class="text-[11px] font-black uppercase text-slate-400 ml-4 block tracking-[0.2em]">Service Start</label>
+                                <input name="startTime" type="time" value="${window.state.settings.startTime}" class="w-full p-6 rounded-2xl bg-slate-50 border-2 border-slate-100 font-bold text-lg">
+                            </div>
+                            <div class="space-y-3">
+                                <label class="text-[11px] font-black uppercase text-slate-400 ml-4 block tracking-[0.2em]">Service End</label>
+                                <input name="endTime" type="time" value="${window.state.settings.endTime}" class="w-full p-6 rounded-2xl bg-slate-50 border-2 border-slate-100 font-bold text-lg">
+                            </div>
+                            <div class="md:col-span-2 space-y-5">
+                                <label class="text-[11px] font-black uppercase text-slate-400 ml-4 block tracking-[0.2em]">Operating Days</label>
+                                <div class="flex flex-wrap gap-3">
+                                    ${DAYS_TH.map((d, i) => `
+                                        <label class="flex items-center gap-3 bg-slate-50 px-6 py-5 rounded-[1.5rem] border-2 border-slate-100 text-sm font-black uppercase cursor-pointer hover:bg-indigo-50 transition-all select-none">
+                                            <input type="checkbox" name="day-${i}" ${window.state.settings.availableDays.includes(i) ? 'checked' : ''} class="w-6 h-6 rounded text-indigo-600 border-2"> ${d}
+                                        </label>
+                                    `).join('')}
+                                </div>
+                            </div>
+                            <div class="md:col-span-2 space-y-3">
+                                <label class="text-[11px] font-black uppercase text-slate-400 ml-4 block tracking-[0.2em]">Total Project Quota (Hr/Student)</label>
+                                <input name="maxHours" type="number" value="${window.state.settings.maxHoursPerPerson}" class="w-full p-7 rounded-[2rem] bg-indigo-50 border-4 border-indigo-100 font-black text-4xl text-indigo-600 text-center">
+                            </div>
+                            <div class="md:col-span-2 pt-6">
+                                <button type="submit" class="w-full py-6 bg-indigo-600 text-white font-black rounded-[2.5rem] shadow-2xl shadow-indigo-200 hover:bg-indigo-700 transition-all text-2xl border-b-8 border-indigo-800 active:translate-y-1">อัปเดตการตั้งค่าระบบ</button>
+                            </div>
                         </form>
                     </section>
-                    <section class="bg-white p-6 rounded-3xl border shadow-sm">
-                        <h2 class="text-lg font-bold mb-4 text-indigo-600 flex items-center gap-2"><i data-lucide="monitor" size="20"></i> เครื่องมือ</h2>
-                        <form onsubmit="addResource(event)" class="flex gap-2 mb-4">
-                            <input name="resName" placeholder="ชื่อเครื่อง" class="flex-1 p-3 rounded-xl bg-slate-50 border text-sm outline-none" required>
-                            <button type="submit" class="px-4 bg-slate-900 text-white font-bold rounded-xl text-xs">เพิ่ม</button>
+
+                    <!-- Resources -->
+                    <section class="bg-white p-12 rounded-[3.5rem] border border-slate-100 shadow-2xl space-y-10">
+                        <div class="flex items-center gap-4"><i data-lucide="monitor-speaker" class="text-indigo-600" size="40"></i><h2 class="text-3xl font-black tracking-tight">คลังอุปกรณ์</h2></div>
+                        <form onsubmit="addResource(event)" class="flex gap-5">
+                            <input name="resName" placeholder="เพิ่มอุปกรณ์ใหม่ (เช่น Laser Cutter A)..." class="flex-1 p-6 rounded-[2rem] bg-slate-50 border-2 border-slate-100 font-bold outline-none focus:border-indigo-500 text-lg shadow-inner" required>
+                            <button type="submit" class="px-12 bg-slate-900 text-white font-black rounded-[2rem] hover:bg-black transition-all shadow-lg active:scale-95 uppercase tracking-widest text-xs">Add New</button>
                         </form>
-                        <div class="space-y-2">
+                        <div class="grid grid-cols-1 gap-5">
                             ${window.state.resources.map(res => `
-                                <div class="flex justify-between items-center p-3 bg-slate-50 rounded-2xl border">
-                                    <div><p class="text-sm font-bold">${res.name}</p><p class="text-[10px] text-slate-400 font-bold uppercase">${res.status}</p></div>
-                                    <div class="flex gap-1">
-                                        <button onclick="openQRModal('${res.id}', '${res.name}')" class="p-2 bg-white text-indigo-600 rounded-lg border shadow-sm"><i data-lucide="qr-code" size="16"></i></button>
-                                        <button onclick="deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'resources', '${res.id}'))" class="p-2 text-red-300 hover:text-red-500"><i data-lucide="trash-2" size="16"></i></button>
+                                <div class="flex justify-between items-center p-8 bg-slate-50 rounded-[2.5rem] border-2 border-slate-100 group transition-all hover:border-indigo-200 hover:shadow-xl">
+                                    <div class="flex items-center gap-6">
+                                        <div class="w-16 h-16 bg-white rounded-3xl flex items-center justify-center text-slate-400 group-hover:text-indigo-600 transition-colors shadow-sm border border-slate-50"><i data-lucide="cpu" size="32"></i></div>
+                                        <div><p class="font-black text-slate-800 text-2xl leading-none tracking-tight">${res.name}</p><p class="text-[10px] text-slate-400 font-black uppercase mt-3 tracking-[0.3em]">Device ID: ${res.id}</p></div>
+                                    </div>
+                                    <div class="flex gap-4">
+                                        <button onclick="openQRModal('${res.id}', '${res.name}')" class="p-5 bg-white text-indigo-600 rounded-[1.5rem] shadow-md border border-slate-100 hover:bg-indigo-600 hover:text-white transition-all active:scale-90"><i data-lucide="qr-code" size="28"></i></button>
+                                        <button onclick="deleteDoc(doc(db, 'artifacts', fbId, 'public', 'data', 'resources', '${res.id}'))" class="p-5 bg-white text-red-400 rounded-[1.5rem] shadow-md border border-slate-100 hover:bg-red-50 transition-all active:scale-90"><i data-lucide="trash-2" size="28"></i></button>
                                     </div>
                                 </div>
                             `).join('')}
+                        </div>
+                    </section>
+
+                    <!-- History / Logs -->
+                    <section class="bg-white p-12 rounded-[3.5rem] border border-slate-100 shadow-2xl space-y-10 overflow-hidden">
+                        <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-6">
+                            <div class="flex items-center gap-4"><i data-lucide="clipboard-list" class="text-indigo-600" size="40"></i><h2 class="text-3xl font-black tracking-tight">ประวัติการจองทั้งหมด</h2></div>
+                            <div class="flex gap-4 w-full sm:w-auto">
+                                <button onclick="clearHistoryByDay()" class="flex-1 sm:flex-none px-6 py-4 bg-slate-100 text-slate-600 text-[10px] font-black uppercase rounded-2xl hover:bg-slate-200 transition-colors tracking-[0.2em] border border-slate-100">ลบตามวัน</button>
+                                <button onclick="clearHistoryTotal()" class="flex-1 sm:flex-none px-6 py-4 bg-red-50 text-red-500 text-[10px] font-black uppercase rounded-2xl hover:bg-red-100 transition-colors tracking-[0.2em] border border-red-100">ล้างทั้งหมด</button>
+                            </div>
+                        </div>
+                        <div class="overflow-x-auto -mx-12 px-12 custom-scrollbar">
+                            <table class="w-full text-left">
+                                <thead class="border-b-4 border-slate-50 text-[12px] font-black uppercase text-slate-400 tracking-[0.3em]">
+                                    <tr>
+                                        <th class="py-8">วันและเวลา</th>
+                                        <th class="py-8">นักศึกษา / อุปกรณ์</th>
+                                        <th class="py-8 text-center">การเช็คอิน</th>
+                                        <th class="py-8 text-right"></th>
+                                    </tr>
+                                </thead>
+                                <tbody class="divide-y-2 divide-slate-50">
+                                    ${window.state.bookings.slice().sort((a,b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0)).map(b => `
+                                        <tr class="group hover:bg-slate-50/50 transition-colors">
+                                            <td class="py-8">
+                                                <p class="font-black text-slate-800 text-lg tracking-tight">${b.date}</p>
+                                                <p class="text-[11px] text-indigo-600 font-black mt-1.5 uppercase">${b.slot} - ${b.slot.split(':')[0]}:59</p>
+                                            </td>
+                                            <td class="py-8">
+                                                <div class="flex flex-col">
+                                                    <p class="text-slate-800 font-black text-lg">${b.studentId}</p>
+                                                    <p class="text-[10px] text-slate-400 font-bold uppercase mt-1 tracking-widest">${b.resourceName}</p>
+                                                </div>
+                                            </td>
+                                            <td class="py-8 text-center">
+                                                ${b.status === 'checked_in' ? `
+                                                    <div class="inline-flex flex-col items-center">
+                                                        <span class="px-4 py-1.5 bg-green-100 text-green-600 text-[10px] font-black rounded-full uppercase tracking-widest border border-green-200">Arrived</span>
+                                                        <span class="text-[9px] text-slate-400 mt-2 font-bold">${new Date(b.checkInAt).toLocaleTimeString()}</span>
+                                                    </div>
+                                                ` : `
+                                                    <span class="px-4 py-1.5 bg-slate-100 text-slate-400 text-[10px] font-black rounded-full uppercase tracking-widest border border-slate-200 opacity-60">Pending</span>
+                                                `}
+                                            </td>
+                                            <td class="py-8 text-right">
+                                                <button onclick="deleteBookingItem('${b.id}')" class="p-4 text-slate-300 hover:text-red-500 transition-all opacity-0 group-hover:opacity-100 active:scale-75"><i data-lucide="trash-2" size="24"></i></button>
+                                            </td>
+                                        </tr>
+                                    `).join('')}
+                                </tbody>
+                            </table>
+                            ${window.state.bookings.length === 0 ? '<div class="py-32 text-center grayscale opacity-30"><i data-lucide="database-zap" size="64" class="mx-auto mb-6"></i><p class="text-slate-500 font-black uppercase tracking-[0.4em] text-sm">No Database Records</p></div>' : ''}
                         </div>
                     </section>
                 </div>
@@ -568,17 +758,19 @@
         }
 
         function renderQRModal() {
-            const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${window.state.showQRModal.id}`;
+            const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${window.state.showQRModal.id}`;
             return `
-                <div class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[200] flex items-center justify-center p-6">
-                    <div class="bg-white rounded-[2.5rem] p-8 max-w-sm w-full text-center relative shadow-2xl">
-                        <button onclick="closeQRModal()" class="absolute top-6 right-6 p-2 text-slate-300 hover:text-slate-600"><i data-lucide="x" size="24"></i></button>
-                        <h3 class="text-xl font-black mb-1">${window.state.showQRModal.name}</h3>
-                        <p class="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-8">Resource ID: ${window.state.showQRModal.id}</p>
-                        <div class="bg-slate-50 p-4 rounded-3xl mb-8 flex items-center justify-center border">
-                            <img src="${qrUrl}" alt="QR" class="w-[180px] h-[180px]">
+                <div class="fixed inset-0 bg-slate-900/90 backdrop-blur-md z-[200] flex items-center justify-center p-6 no-print">
+                    <div class="bg-white rounded-[5rem] p-16 max-w-sm w-full text-center relative shadow-2xl animate-in zoom-in duration-300 border-t-[12px] border-indigo-600 shadow-indigo-500/20">
+                        <button onclick="closeQRModal()" class="absolute top-10 right-10 p-4 text-slate-300 hover:text-slate-800 transition-all hover:rotate-90 active:scale-75"><i data-lucide="x" size="36"></i></button>
+                        <h3 class="text-4xl font-black mb-2 text-slate-800 tracking-tight">${window.state.showQRModal.name}</h3>
+                        <p class="text-[10px] font-black text-slate-400 uppercase tracking-[0.5em] mb-12">Hardware Access Key</p>
+                        <div class="bg-slate-50 p-10 rounded-[4rem] mb-12 flex items-center justify-center border-4 border-slate-50 shadow-inner relative group">
+                            <div class="absolute inset-0 bg-indigo-600/5 opacity-0 group-hover:opacity-100 transition-opacity rounded-[4rem]"></div>
+                            <img src="${qrUrl}" alt="QR" class="w-[220px] h-[220px] rounded-3xl shadow-2xl relative z-10">
                         </div>
-                        <button onclick="window.print()" class="w-full py-4 bg-slate-900 text-white font-black rounded-2xl flex items-center justify-center gap-2"><i data-lucide="printer" size="18"></i> พิมพ์ใบ QR Code</button>
+                        <p class="text-[11px] font-black text-slate-400 uppercase mb-10 leading-relaxed tracking-wider">Print this identification key <br/>and attach to the physical hardware.</p>
+                        <button onclick="window.print()" class="w-full py-7 bg-indigo-600 text-white font-black rounded-[2.5rem] shadow-2xl hover:bg-indigo-700 transition-all flex items-center justify-center gap-4 text-xl border-b-4 border-indigo-800 active:translate-y-1"><i data-lucide="printer" size="28"></i> พิมพ์รหัสเครื่อง</button>
                     </div>
                 </div>
             `;
@@ -586,10 +778,19 @@
 
         function renderFooter() {
             return `
-                <footer class="fixed bottom-0 left-0 right-0 bg-white/90 backdrop-blur-md border-t py-4 px-6 z-40">
-                    <div class="max-w-2xl mx-auto flex justify-between items-center text-[10px] font-bold text-slate-400 uppercase tracking-widest">
-                        <div class="flex items-center gap-2"><i data-lucide="user" size={12} class="text-indigo-400"></i> ID: ${window.state.studentId}</div>
-                        <div class="flex items-center gap-1.5 text-green-500 animate-pulse"><div class="w-1.5 h-1.5 rounded-full bg-green-500"></div> Connected</div>
+                <footer class="fixed bottom-0 left-0 right-0 bg-white/95 backdrop-blur-xl border-t border-slate-100 py-10 px-10 z-40 shadow-[0_-20px_60px_rgba(0,0,0,0.06)]">
+                    <div class="max-w-3xl mx-auto flex justify-between items-center text-[11px] font-black text-slate-400 uppercase tracking-[0.3em]">
+                        <div class="flex items-center gap-4 border-r pr-10 border-slate-100">
+                            <div class="w-10 h-10 rounded-2xl bg-indigo-50 flex items-center justify-center text-indigo-400 shadow-inner"><i data-lucide="fingerprint" size="18"></i></div>
+                            <div>
+                                <p class="text-[8px] opacity-60 leading-none mb-1">Session Identified</p>
+                                <p class="text-slate-800">${window.state.studentId || 'ESTABLISHING...'}</p>
+                            </div>
+                        </div>
+                        <div class="flex items-center gap-4 text-green-500 bg-green-50/50 px-6 py-3 rounded-2xl border border-green-100">
+                            <div class="w-2.5 h-2.5 rounded-full bg-green-500 animate-pulse shadow-[0_0_12px_#4ade80]"></div> 
+                            <span>Node Synced</span>
+                        </div>
                     </div>
                 </footer>
             `;
@@ -597,9 +798,13 @@
 
         function renderError() {
             return `
-                <div class="mb-6 p-4 bg-red-50 border border-red-100 text-red-600 rounded-2xl text-[11px] font-bold flex items-center gap-3">
-                    <i data-lucide="alert-circle" size="16"></i>
-                    <p class="flex-1">${window.state.error}</p>
+                <div class="mb-12 p-8 bg-red-50 border-2 border-red-100 text-red-600 rounded-[2.5rem] text-[12px] font-black flex items-center gap-6 animate-in slide-in-from-top-10 shadow-xl shadow-red-100/50">
+                    <div class="w-12 h-12 bg-red-100 rounded-3xl flex items-center justify-center shrink-0 shadow-inner"><i data-lucide="alert-triangle" size="24"></i></div>
+                    <div class="flex-1">
+                        <p class="uppercase tracking-widest mb-1">Security / System Alert</p>
+                        <p class="text-slate-500 font-bold opacity-80 leading-relaxed">${String(window.state.error)}</p>
+                    </div>
+                    <button onclick="window.state.error=null; render();" class="text-red-300 hover:text-red-600 p-3 transition-colors active:scale-75"><i data-lucide="x-circle" size="32"></i></button>
                 </div>
             `;
         }
