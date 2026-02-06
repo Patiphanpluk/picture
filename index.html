@@ -28,9 +28,21 @@
 
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Sarabun:wght@300;400;500;700&display=swap');
-        body { font-family: 'Sarabun', sans-serif; }
+        body { 
+            font-family: 'Sarabun', sans-serif; 
+            -webkit-user-select: none; /* Chrome/Safari */
+            -moz-user-select: none; /* Firefox */
+            -ms-user-select: none; /* IE10+ */
+            user-select: none; /* Standard */
+        }
         @media print { body { display: none !important; } }
         
+        /* Disable Image Interaction on Mobile */
+        img {
+            -webkit-touch-callout: none; /* iOS Safari */
+            pointer-events: none; /* Disable all clicks/touches on image */
+        }
+
         /* Custom Scrollbar */
         ::-webkit-scrollbar { width: 8px; }
         ::-webkit-scrollbar-track { background: #000; }
@@ -47,9 +59,9 @@
         import { createRoot } from 'react-dom/client';
         import { initializeApp } from 'firebase/app';
         import { getAuth, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
-        import { getFirestore, doc, setDoc, updateDoc, getDoc, onSnapshot, serverTimestamp, collection, query, where, orderBy, deleteField } from 'firebase/firestore';
-        import { getStorage, ref, uploadBytes, getDownloadURL, deleteObject } from 'firebase/storage';
-        import { AlertTriangle, Clock, Eye, EyeOff, Lock, Shield, Share2, Copy, Settings, Trash2, CheckCircle, XCircle, History, Image as ImageIcon, Upload, X } from 'lucide-react';
+        import { getFirestore, doc, setDoc, updateDoc, deleteDoc, getDoc, onSnapshot, serverTimestamp, collection, query, where, orderBy, deleteField } from 'firebase/firestore';
+        import { getStorage, ref, uploadBytesResumable, getDownloadURL, deleteObject } from 'firebase/storage';
+        import { AlertTriangle, Clock, Eye, EyeOff, Lock, Shield, Share2, Copy, Settings, Trash2, CheckCircle, XCircle, History, Image as ImageIcon, Upload, X, Loader2 } from 'lucide-react';
 
         // --- Firebase Configuration ---
         const firebaseConfig = {
@@ -85,23 +97,33 @@
 
         const SecurityWrapper = ({ children, isBlurred }) => {
             const [blurActive, setBlurActive] = useState(false);
+            const [warningMsg, setWarningMsg] = useState('');
 
             useEffect(() => {
                 const handleContextMenu = (e) => e.preventDefault();
                 const handleKeyDown = (e) => {
-                if (
-                    e.key === 'PrintScreen' ||
-                    (e.ctrlKey && (e.key === 'p' || e.key === 's' || e.key === 'c')) ||
-                    (e.metaKey && (e.key === 'p' || e.key === 's' || e.key === 'c'))
-                ) {
-                    e.preventDefault();
-                    setBlurActive(true);
-                    setTimeout(() => setBlurActive(false), 2000);
-                }
+                    // Detect PrintScreen or Shortcuts
+                    if (
+                        e.key === 'PrintScreen' ||
+                        (e.ctrlKey && (e.key === 'p' || e.key === 's' || e.key === 'c' || e.key === 'u')) ||
+                        (e.metaKey && (e.key === 'p' || e.key === 's' || e.key === 'c' || e.key === 'u'))
+                    ) {
+                        e.preventDefault();
+                        setBlurActive(true);
+                        setWarningMsg('ห้ามบันทึกภาพหน้าจอ!');
+                        setTimeout(() => {
+                            setBlurActive(false);
+                            setWarningMsg('');
+                        }, 3000);
+                    }
                 };
 
                 const handleVisibilityChange = () => {
-                    setBlurActive(document.hidden);
+                    if (document.hidden) {
+                        setBlurActive(true);
+                    } else {
+                        setTimeout(() => setBlurActive(false), 500); 
+                    }
                 };
 
                 const handleWindowBlur = () => setBlurActive(true);
@@ -112,23 +134,26 @@
                 document.addEventListener('visibilitychange', handleVisibilityChange);
                 window.addEventListener('blur', handleWindowBlur);
                 window.addEventListener('focus', handleWindowFocus);
+                document.addEventListener('touchstart', (e) => {
+                   // Optional: prevent zooming or double tap logic if needed
+                }, {passive: false});
 
                 return () => {
-                document.removeEventListener('contextmenu', handleContextMenu);
-                document.removeEventListener('keydown', handleKeyDown);
-                document.removeEventListener('visibilitychange', handleVisibilityChange);
-                window.removeEventListener('blur', handleWindowBlur);
-                window.removeEventListener('focus', handleWindowFocus);
+                    document.removeEventListener('contextmenu', handleContextMenu);
+                    document.removeEventListener('keydown', handleKeyDown);
+                    document.removeEventListener('visibilitychange', handleVisibilityChange);
+                    window.removeEventListener('blur', handleWindowBlur);
+                    window.removeEventListener('focus', handleWindowFocus);
                 };
             }, []);
 
             return (
-                <div className="relative w-full min-h-screen bg-black text-white selection:bg-transparent select-none font-sans">
+                <div className="relative w-full min-h-screen bg-black text-white selection:bg-transparent select-none font-sans" onContextMenu={(e)=>e.preventDefault()}>
                 {(blurActive || isBlurred) && (
                     <div className="fixed inset-0 z-[100] backdrop-blur-3xl bg-black/95 flex items-center justify-center">
                     <div className="text-center p-8">
                         <EyeOff size={64} className="mx-auto text-red-500 mb-4 animate-pulse" />
-                        <h2 className="text-3xl font-bold text-red-500">Security Mode</h2>
+                        <h2 className="text-3xl font-bold text-red-500">{warningMsg || 'Security Mode'}</h2>
                         <p className="text-gray-400 mt-2">เนื้อหาถูกซ่อนเพื่อความปลอดภัย</p>
                     </div>
                     </div>
@@ -149,6 +174,7 @@
             const [selectedImage, setSelectedImage] = useState(null);
             const [imagePreview, setImagePreview] = useState(null);
             const [isUploading, setIsUploading] = useState(false);
+            const [uploadProgress, setUploadProgress] = useState(0); // Progress bar
             const [timerSeconds, setTimerSeconds] = useState(60);
             const [generatedLink, setGeneratedLink] = useState(null);
             const [history, setHistory] = useState([]);
@@ -289,10 +315,8 @@
                 return () => clearInterval(interval);
             }, [linkData, isExpired, viewLinkId]);
 
-
             const handleExpire = async (docRef, data) => {
                 try {
-                    // Delete Content from Firestore
                     await updateDoc(docRef, {
                         status: 'expired',
                         message: deleteField(),
@@ -300,57 +324,113 @@
                         storagePath: deleteField(),
                         expiredAt: serverTimestamp()
                     });
-                    
-                    // Delete Image from Storage if exists
                     if (data?.storagePath) {
                         const imageRef = ref(storage, data.storagePath);
-                        deleteObject(imageRef).catch((error) => {
-                            console.log("Image already deleted or permission denied:", error);
-                        });
+                        deleteObject(imageRef).catch((e) => console.log("Image delete error", e));
                     }
-
                     setIsExpired(true);
                 } catch (e) {
                     console.error("Expire error", e);
                 }
             };
 
+            // --- History Management ---
+            const handleDeleteHistoryItem = async (item) => {
+                if(!confirm(`ต้องการลบรายการ ${item.id} ใช่หรือไม่? \n(หากยังไม่หมดอายุ ผู้รับจะไม่สามารถดูได้อีก)`)) return;
+                
+                try {
+                    // 1. Delete Firestore Doc
+                    const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'links', item.id);
+                    await deleteDoc(docRef);
+
+                    // 2. Delete Storage Image (if exists)
+                    if (item.storagePath) {
+                        const imageRef = ref(storage, item.storagePath);
+                        deleteObject(imageRef).catch(err => console.log("Storage cleanup error:", err));
+                    }
+                } catch (error) {
+                    alert('เกิดข้อผิดพลาดในการลบ: ' + error.message);
+                }
+            };
+
+            const handleClearAllHistory = async () => {
+                if(!confirm("⚠️ ยืนยันการล้างประวัติทั้งหมด? \nรายการและรูปภาพทั้งหมดจะถูกลบถาวร!")) return;
+                
+                try {
+                    const deletePromises = history.map(item => {
+                        // Create promises for deletion
+                        const docPromise = deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'links', item.id));
+                        let storagePromise = Promise.resolve();
+                        if (item.storagePath) {
+                            storagePromise = deleteObject(ref(storage, item.storagePath)).catch(() => {});
+                        }
+                        return Promise.all([docPromise, storagePromise]);
+                    });
+                    
+                    await Promise.all(deletePromises);
+                    alert("ล้างประวัติเรียบร้อยแล้ว");
+                } catch (error) {
+                    alert('เกิดข้อผิดพลาด: ' + error.message);
+                }
+            };
+
+            // --- Create Link Logic (Updated for Upload Progress) ---
             const createLink = async () => {
                 if (!secretMessage && !selectedImage) return;
                 setIsUploading(true);
-                const newId = Math.random().toString(36).substring(2, 10).toUpperCase();
+                setUploadProgress(0);
                 
-                let imageUrl = null;
+                const newId = Math.random().toString(36).substring(2, 10).toUpperCase();
                 let storagePath = null;
 
                 try {
-                    // Upload Image if selected
+                    // Logic to save data after upload
+                    const saveToFirestore = async (downloadUrl = null) => {
+                        await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'links', newId), {
+                            adminId: user.uid,
+                            message: secretMessage,
+                            imageUrl: downloadUrl,
+                            storagePath: storagePath,
+                            duration: timerSeconds,
+                            created: serverTimestamp(),
+                            status: 'new',
+                            startedAt: null
+                        });
+                        setGeneratedLink(newId);
+                        setSecretMessage('');
+                        clearImage();
+                        setIsUploading(false);
+                        setUploadProgress(0);
+                    };
+
+                    // Upload Image if selected with Progress
                     if (selectedImage) {
                         storagePath = `secrets/${user.uid}/${newId}_${selectedImage.name}`;
                         const storageRef = ref(storage, storagePath);
-                        await uploadBytes(storageRef, selectedImage);
-                        imageUrl = await getDownloadURL(storageRef);
+                        const uploadTask = uploadBytesResumable(storageRef, selectedImage);
+
+                        uploadTask.on('state_changed', 
+                            (snapshot) => {
+                                const progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
+                                setUploadProgress(progress);
+                            }, 
+                            (error) => {
+                                console.error("Upload error:", error);
+                                alert("อัปโหลดรูปภาพล้มเหลว: " + error.message);
+                                setIsUploading(false);
+                            }, 
+                            async () => {
+                                const downloadUrl = await getDownloadURL(uploadTask.snapshot.ref);
+                                await saveToFirestore(downloadUrl);
+                            }
+                        );
+                    } else {
+                        await saveToFirestore(null);
                     }
 
-                    // Save to Firestore
-                    await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'links', newId), {
-                        adminId: user.uid,
-                        message: secretMessage,
-                        imageUrl: imageUrl,
-                        storagePath: storagePath,
-                        duration: timerSeconds,
-                        created: serverTimestamp(),
-                        status: 'new',
-                        startedAt: null
-                    });
-
-                    setGeneratedLink(newId);
-                    setSecretMessage('');
-                    clearImage();
                 } catch (error) {
                     console.error("Error creating link:", error);
-                    alert("เกิดข้อผิดพลาดในการอัปโหลด: " + error.message);
-                } finally {
+                    alert("เกิดข้อผิดพลาด: " + error.message);
                     setIsUploading(false);
                 }
             };
@@ -491,8 +571,8 @@
                                             
                                             <div>
                                                 <label className="block text-xs text-gray-500 uppercase tracking-wider mb-2">ระยะเวลาทำลายตัวเอง (หลังเปิดอ่าน)</label>
-                                                <div className="grid grid-cols-4 gap-3">
-                                                    {[10, 30, 60, 300].map(s => (
+                                                <div className="grid grid-cols-5 gap-2">
+                                                    {[5, 10, 30, 60, 300].map(s => (
                                                         <button 
                                                             key={s}
                                                             onClick={() => setTimerSeconds(s)}
@@ -507,16 +587,24 @@
                                             <button 
                                                 onClick={createLink}
                                                 disabled={(!secretMessage && !selectedImage) || isUploading}
-                                                className="w-full py-4 bg-white text-black font-bold rounded-xl hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors shadow-lg flex items-center justify-center gap-2"
+                                                className="w-full py-4 bg-white text-black font-bold rounded-xl hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors shadow-lg flex items-center justify-center gap-2 relative overflow-hidden"
                                             >
-                                                {isUploading ? (
-                                                    <>
-                                                        <div className="w-5 h-5 border-2 border-black border-t-transparent rounded-full animate-spin"></div>
-                                                        กำลังอัปโหลด...
-                                                    </>
-                                                ) : (
-                                                    'สร้างลิงก์ลับ'
+                                                {isUploading && (
+                                                    <div 
+                                                        className="absolute inset-0 bg-emerald-500/20 transition-all duration-300" 
+                                                        style={{width: `${uploadProgress}%`}}
+                                                    ></div>
                                                 )}
+                                                <div className="relative flex items-center gap-2 z-10">
+                                                    {isUploading ? (
+                                                        <>
+                                                            <Loader2 className="animate-spin" size={20} />
+                                                            {uploadProgress < 100 ? `กำลังอัปโหลด... ${Math.round(uploadProgress)}%` : 'กำลังบันทึกข้อมูล...'}
+                                                        </>
+                                                    ) : (
+                                                        'สร้างลิงก์ลับ'
+                                                    )}
+                                                </div>
                                             </button>
                                         </div>
                                     ) : (
@@ -569,9 +657,20 @@
 
                                 {/* History Section */}
                                 <div className="space-y-4">
-                                    <h3 className="text-lg font-bold text-gray-400 flex items-center gap-2 px-2">
-                                        <History size={18} /> ประวัติการส่ง
-                                    </h3>
+                                    <div className="flex justify-between items-end px-2">
+                                        <h3 className="text-lg font-bold text-gray-400 flex items-center gap-2">
+                                            <History size={18} /> ประวัติการส่ง
+                                        </h3>
+                                        {history.length > 0 && (
+                                            <button 
+                                                onClick={handleClearAllHistory}
+                                                className="text-xs text-red-400 hover:text-red-300 underline flex items-center gap-1"
+                                            >
+                                                <Trash2 size={12} /> ล้างประวัติทั้งหมด
+                                            </button>
+                                        )}
+                                    </div>
+                                    
                                     <div className="space-y-3">
                                         {history.length === 0 && (
                                             <div className="text-center py-8 text-gray-600 bg-gray-900/30 rounded-xl border border-dashed border-gray-800">
@@ -579,7 +678,7 @@
                                             </div>
                                         )}
                                         {history.map((item) => (
-                                            <div key={item.id} className="bg-gray-900/50 border border-gray-800 p-4 rounded-xl flex items-center justify-between hover:border-gray-700 transition-colors">
+                                            <div key={item.id} className="bg-gray-900/50 border border-gray-800 p-4 rounded-xl flex items-center justify-between hover:border-gray-700 transition-colors group">
                                                 <div>
                                                     <div className="flex items-center gap-3 mb-1">
                                                         <span className="font-mono text-emerald-500 font-bold">{item.id}</span>
@@ -596,6 +695,13 @@
                                                     <div className="text-right text-xs text-gray-600">
                                                         {item.status === 'expired' ? 'Deleted' : `${item.duration}s timer`}
                                                     </div>
+                                                    <button 
+                                                        onClick={() => handleDeleteHistoryItem(item)}
+                                                        className="p-2 text-gray-600 hover:text-red-500 hover:bg-red-500/10 rounded-lg transition-colors"
+                                                        title="ลบรายการนี้"
+                                                    >
+                                                        <Trash2 size={16} />
+                                                    </button>
                                                 </div>
                                             </div>
                                         ))}
@@ -663,7 +769,12 @@
                                                         src={linkData.imageUrl} 
                                                         alt="Secure Content" 
                                                         className="w-full h-auto max-h-[70vh] object-contain pointer-events-none select-none"
+                                                        style={{ WebkitTouchCallout: 'none', WebkitUserSelect: 'none', userSelect: 'none' }}
+                                                        draggable="false"
                                                         onContextMenu={(e) => e.preventDefault()}
+                                                        onTouchStart={(e) => {
+                                                             if(e.touches.length > 1) e.preventDefault();
+                                                        }}
                                                     />
                                                 </div>
                                             )}
