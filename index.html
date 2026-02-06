@@ -1,811 +1,630 @@
-<!DOCTYPE html>
-<html lang="th">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Secret Link - One Time View</title>
-    
-    <!-- Tailwind CSS -->
-    <script src="https://cdn.tailwindcss.com"></script>
-    
-    <!-- Import Map for Modules -->
-    <script type="importmap">
-    {
-      "imports": {
-        "react": "https://esm.sh/react@18.2.0",
-        "react-dom/client": "https://esm.sh/react-dom@18.2.0/client",
-        "firebase/app": "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js",
-        "firebase/auth": "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js",
-        "firebase/firestore": "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js",
-        "firebase/storage": "https://www.gstatic.com/firebasejs/10.8.0/firebase-storage.js",
-        "lucide-react": "https://esm.sh/lucide-react@0.344.0?external=react"
+import React, { useState, useEffect, useMemo } from 'react';
+import { initializeApp } from 'firebase/app';
+import { 
+  getFirestore, 
+  collection, 
+  doc, 
+  onSnapshot, 
+  setDoc, 
+  addDoc, 
+  updateDoc,
+  deleteDoc, 
+  serverTimestamp 
+} from 'firebase/firestore';
+import { 
+  getAuth, 
+  signInAnonymously, 
+  signInWithCustomToken, 
+  onAuthStateChanged 
+} from 'firebase/auth';
+import { 
+  Calendar as CalendarIcon, 
+  Clock, 
+  Settings, 
+  User, 
+  Trash2, 
+  CheckCircle2, 
+  AlertCircle,
+  Loader2,
+  ChevronLeft,
+  Plus,
+  Monitor,
+  CalendarRange,
+  LogIn,
+  Scan,
+  PlayCircle,
+  StopCircle,
+  Activity,
+  QrCode,
+  Ticket,
+  Printer,
+  X,
+  Camera
+} from 'lucide-react';
+
+// --- Firebase Configuration ---
+const firebaseConfig = {
+  apiKey: "AIzaSyAYWIoMwtHmhhcEGloHX2pjX_wmv9Wj-O0",
+  authDomain: "picture-30ba8.firebaseapp.com",
+  databaseURL: "https://picture-30ba8-default-rtdb.asia-southeast1.firebasedatabase.app",
+  projectId: "picture-30ba8",
+  storageBucket: "picture-30ba8.firebasestorage.app",
+  messagingSenderId: "486821075004",
+  appId: "1:486821075004:web:ac910ff60949174c090b39",
+  measurementId: "G-W0KL32TSHM"
+};
+
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'booking-system-v5';
+
+const DAYS_TH = ["อาทิตย์", "จันทร์", "อังคาร", "พุธ", "พฤหัสบดี", "ศุกร์", "เสาร์"];
+
+// Helper component for QR Code via API
+const QRCodeImage = ({ value, size = 150 }) => {
+  const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=${size}x${size}&data=${encodeURIComponent(value)}`;
+  return (
+    <div className="flex items-center justify-center bg-white p-2 rounded-xl">
+      <img 
+        src={qrUrl} 
+        alt="QR Code" 
+        className="w-full h-full object-contain"
+        onError={(e) => {
+          e.target.onerror = null;
+          e.target.src = "https://via.placeholder.com/150?text=QR+Error";
+        }}
+      />
+    </div>
+  );
+};
+
+const App = () => {
+  // --- 1. State Management ---
+  const [user, setUser] = useState(null);
+  const [studentId, setStudentId] = useState(localStorage.getItem('student_id') || '');
+  const [isLoggedIn, setIsLoggedIn] = useState(!!localStorage.getItem('student_id'));
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [view, setView] = useState('selection'); // selection, calendar, pass, scanner
+  
+  const [settings, setSettings] = useState({ 
+    maxHours: 2, 
+    startTime: "09:00", 
+    endTime: "18:00",
+    availableDays: [1, 2, 3, 4, 5],
+    startDate: new Date().toISOString().split('T')[0],
+    endDate: "" 
+  });
+  
+  const [resources, setResources] = useState([]);
+  const [bookings, setBookings] = useState([]);
+  const [selectedResource, setSelectedResource] = useState(null);
+  const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0]);
+  const [activeBooking, setActiveBooking] = useState(null);
+  const [error, setError] = useState(null);
+  const [showQRModal, setShowQRModal] = useState(null);
+
+  // --- 2. Effects ---
+  useEffect(() => {
+    let isMounted = true;
+    const initAuth = async () => {
+      try {
+        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+          try { await signInWithCustomToken(auth, __initial_auth_token); } 
+          catch (e) { await signInAnonymously(auth); }
+        } else {
+          await signInAnonymously(auth);
+        }
+      } catch (err) {
+        if (isMounted) setError("Auth Error: " + err.message);
       }
+    };
+    initAuth();
+    const unsubscribe = onAuthStateChanged(auth, (u) => {
+      if (isMounted) { setUser(u); setLoading(false); }
+    });
+    return () => { isMounted = false; unsubscribe(); };
+  }, []);
+
+  useEffect(() => {
+    if (!user) return;
+    const unsubSettings = onSnapshot(doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'global_config'), (s) => {
+      if (s.exists()) setSettings(s.data());
+    });
+    const unsubResources = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'resources'), (s) => {
+      setResources(s.docs.map(d => ({ id: d.id, ...d.data() })));
+    });
+    const unsubBookings = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'bookings'), (s) => {
+      setBookings(s.docs.map(d => ({ id: d.id, ...d.data() })));
+    });
+    return () => { unsubSettings(); unsubResources(); unsubBookings(); };
+  }, [user]);
+
+  // --- 3. Derived State ---
+  const isDateAvailable = useMemo(() => {
+    const dateObj = new Date(selectedDate);
+    const dayOfWeek = dateObj.getDay();
+    const isInRange = (!settings.startDate || selectedDate >= settings.startDate) &&
+                      (!settings.endDate || selectedDate <= settings.endDate);
+    return isInRange && settings.availableDays?.includes(dayOfWeek);
+  }, [selectedDate, settings]);
+
+  const timeSlots = useMemo(() => {
+    const slots = [];
+    const start = parseInt(settings.startTime?.split(':')[0]) || 9;
+    const end = parseInt(settings.endTime?.split(':')[0]) || 18;
+    for (let i = start; i < end; i++) slots.push(`${i.toString().padStart(2, '0')}:00`);
+    return slots;
+  }, [settings]);
+
+  const usedHours = useMemo(() => {
+    return bookings.filter(b => b.studentId === studentId && b.date === selectedDate).length;
+  }, [bookings, studentId, selectedDate]);
+
+  // --- 4. Handlers ---
+  const handleLogin = (e) => {
+    e.preventDefault();
+    if (studentId.trim().length < 5) return setError("รหัสนักศึกษาไม่ถูกต้อง");
+    localStorage.setItem('student_id', studentId);
+    setIsLoggedIn(true);
+    setError(null);
+  };
+
+  const handleLogout = () => {
+    localStorage.removeItem('student_id');
+    setStudentId('');
+    setIsLoggedIn(false);
+    setSelectedResource(null);
+    setActiveBooking(null);
+    setView('selection');
+  };
+
+  const toggleBooking = async (slot) => {
+    if (!selectedResource || !isDateAvailable || !user) return;
+    
+    const existing = bookings.find(b => b.date === selectedDate && b.slot === slot && b.resourceId === selectedResource.id);
+    
+    if (existing) {
+      if (existing.studentId === studentId || isAdmin) {
+        await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'bookings', existing.id));
+      } else {
+        setError("เวลานี้มีคนจองแล้ว");
+        setTimeout(() => setError(null), 3000);
+      }
+      return;
     }
-    </script>
 
-    <!-- Babel for JSX -->
-    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    if (usedHours >= (settings.maxHours || 2)) {
+      setError(`จองได้สูงสุด ${settings.maxHours} ชม./วัน`);
+      return;
+    }
 
-    <style>
-        @import url('https://fonts.googleapis.com/css2?family=Sarabun:wght@300;400;500;700&display=swap');
-        body { 
-            font-family: 'Sarabun', sans-serif; 
-            -webkit-user-select: none; /* Chrome/Safari */
-            -moz-user-select: none; /* Firefox */
-            -ms-user-select: none; /* IE10+ */
-            user-select: none; /* Standard */
-        }
-        @media print { body { display: none !important; } }
-        
-        /* Disable Image Interaction on Mobile */
-        img {
-            -webkit-touch-callout: none; /* iOS Safari */
-            pointer-events: none; /* Disable all clicks/touches on image */
-        }
+    const bookingData = {
+      resourceId: selectedResource.id,
+      resourceName: selectedResource.name,
+      date: selectedDate,
+      slot,
+      studentId: studentId,
+      createdAt: serverTimestamp()
+    };
 
-        /* Custom Scrollbar */
-        ::-webkit-scrollbar { width: 8px; }
-        ::-webkit-scrollbar-track { background: #000; }
-        ::-webkit-scrollbar-thumb { background: #333; border-radius: 4px; }
-        ::-webkit-scrollbar-thumb:hover { background: #10b981; }
-    </style>
-</head>
-<body class="bg-black text-white min-h-screen">
-    <div id="root"></div>
+    try {
+      const docRef = await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'bookings'), bookingData);
+      setActiveBooking({ id: docRef.id, ...bookingData });
+      setView('pass'); // Redirect to booking pass view
+    } catch (err) {
+      setError("จองไม่สำเร็จ: " + err.message);
+    }
+  };
 
-    <!-- Main Application Script -->
-    <script type="text/babel" data-type="module">
-        import React, { useState, useEffect, useRef } from 'react';
-        import { createRoot } from 'react-dom/client';
-        import { initializeApp } from 'firebase/app';
-        import { getAuth, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
-        import { getFirestore, doc, setDoc, updateDoc, deleteDoc, getDoc, onSnapshot, serverTimestamp, collection, query, where, orderBy, deleteField } from 'firebase/firestore';
-        import { getStorage, ref, uploadBytesResumable, getDownloadURL, deleteObject } from 'firebase/storage';
-        import { AlertTriangle, Clock, Eye, EyeOff, Lock, Shield, Share2, Copy, Settings, Trash2, CheckCircle, XCircle, History, Image as ImageIcon, Upload, X, Loader2 } from 'lucide-react';
+  const verifyScan = async (scannedValue) => {
+    if (scannedValue === activeBooking.resourceId) {
+      try {
+        await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'resources', activeBooking.resourceId), {
+          status: 'in_use',
+          currentStudent: studentId,
+          startedAt: new Date().toISOString()
+        });
+        setView('selection');
+        setSelectedResource(null);
+        setActiveBooking(null);
+        // Using custom UI message instead of alert
+        setError("เช็คอินสำเร็จ! เริ่มใช้งานเครื่องมือได้");
+        setTimeout(() => setError(null), 5000);
+      } catch (err) {
+        setError("ไม่สามารถเช็คอินได้");
+      }
+    } else {
+      setError("QR Code ไม่ถูกต้องสำหรับเครื่องมือที่คุณจอง");
+    }
+  };
 
-        // --- Firebase Configuration ---
-        const firebaseConfig = {
-            apiKey: "AIzaSyAYWIoMwtHmhhcEGloHX2pjX_wmv9Wj-O0",
-            authDomain: "picture-30ba8.firebaseapp.com",
-            databaseURL: "https://picture-30ba8-default-rtdb.asia-southeast1.firebasedatabase.app",
-            projectId: "picture-30ba8",
-            storageBucket: "picture-30ba8.firebasestorage.app",
-            messagingSenderId: "486821075004",
-            appId: "1:486821075004:web:ac910ff60949174c090b39",
-            measurementId: "G-W0KL32TSHM"
-        };
+  const stopUsage = async (resourceId) => {
+    await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'resources', resourceId), {
+      status: 'idle', currentStudent: null, startedAt: null
+    });
+  };
 
-        const app = initializeApp(firebaseConfig);
-        const auth = getAuth(app);
-        const db = getFirestore(app);
-        const storage = getStorage(app);
-        const appId = 'github-hosted-v1';
+  // --- 5. UI Components ---
 
-        // --- Helper Components ---
-
-        const Watermark = ({ text }) => {
-            return (
-                <div className="fixed inset-0 pointer-events-none z-50 overflow-hidden opacity-10 flex flex-wrap content-center justify-center gap-12 rotate-12 select-none">
-                {Array.from({ length: 20 }).map((_, i) => (
-                    <div key={i} className="text-xl font-bold text-gray-500 whitespace-nowrap">
-                    {text || 'SECRET'} - ONE TIME VIEW
-                    </div>
+  const AdminPanel = () => (
+    <div className="space-y-6 animate-in fade-in slide-in-from-bottom-2">
+      <section className="bg-white p-6 rounded-3xl border border-slate-100 shadow-sm">
+        <h2 className="text-lg font-bold mb-4 text-indigo-600 flex items-center gap-2"><Settings size={20}/> ตั้งค่าระบบ</h2>
+        <form onSubmit={(e) => {
+          e.preventDefault();
+          const f = new FormData(e.target);
+          const availableDays = DAYS_TH.map((_, i) => f.get(`day-${i}`) ? i : null).filter(x => x !== null);
+          setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'global_config'), {
+            maxHours: parseInt(f.get('maxHours')),
+            startTime: f.get('startTime'),
+            endTime: f.get('endTime'),
+            startDate: f.get('startDate'),
+            endDate: f.get('endDate'),
+            availableDays
+          });
+          setIsAdmin(false);
+        }} className="space-y-4">
+           <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-1">
+                <label className="text-[10px] font-bold text-slate-400 uppercase">เวลาเริ่ม</label>
+                <input name="startTime" type="time" defaultValue={settings.startTime} className="w-full p-3 rounded-xl bg-slate-50 border text-sm" />
+              </div>
+              <div className="space-y-1">
+                <label className="text-[10px] font-bold text-slate-400 uppercase">เวลาปิด</label>
+                <input name="endTime" type="time" defaultValue={settings.endTime} className="w-full p-3 rounded-xl bg-slate-50 border text-sm" />
+              </div>
+           </div>
+           <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-1">
+                <label className="text-[10px] font-bold text-slate-400 uppercase">วันที่เริ่ม</label>
+                <input name="startDate" type="date" defaultValue={settings.startDate} className="w-full p-3 rounded-xl bg-slate-50 border text-sm" />
+              </div>
+              <div className="space-y-1">
+                <label className="text-[10px] font-bold text-slate-400 uppercase">วันที่สิ้นสุด</label>
+                <input name="endDate" type="date" defaultValue={settings.endDate} className="w-full p-3 rounded-xl bg-slate-50 border text-sm" />
+              </div>
+           </div>
+           <div className="space-y-2">
+              <label className="text-[10px] font-bold text-slate-400 uppercase">วันทำการ</label>
+              <div className="flex flex-wrap gap-2">
+                {DAYS_TH.map((d, i) => (
+                  <label key={i} className="flex items-center gap-1 bg-slate-50 px-2 py-1 rounded-lg border text-[10px] font-bold cursor-pointer">
+                    <input type="checkbox" name={`day-${i}`} defaultChecked={settings.availableDays.includes(i)} className="rounded text-indigo-600" /> {d}
+                  </label>
                 ))}
+              </div>
+           </div>
+           <div className="space-y-1">
+              <label className="text-[10px] font-bold text-slate-400 uppercase">จองได้สูงสุด (ชม./วัน)</label>
+              <input name="maxHours" type="number" defaultValue={settings.maxHours} className="w-full p-3 rounded-xl bg-slate-50 border text-sm" />
+           </div>
+           <button type="submit" className="w-full py-3 bg-indigo-600 text-white font-bold rounded-xl shadow-lg hover:bg-indigo-700 transition-colors">บันทึกการตั้งค่า</button>
+        </form>
+      </section>
+
+      <section className="bg-white p-6 rounded-3xl border border-slate-100 shadow-sm">
+        <h2 className="text-lg font-bold mb-4 text-indigo-600 flex items-center gap-2"><Monitor size={20}/> รายการเครื่องมือ</h2>
+        <form onSubmit={async (e) => {
+          e.preventDefault();
+          const name = e.target.resourceName.value;
+          if (!name) return;
+          await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'resources'), { name, status: 'idle' });
+          e.target.reset();
+        }} className="flex gap-2 mb-4">
+          <input name="resourceName" placeholder="ระบุชื่อเครื่อง" className="flex-1 p-3 rounded-xl bg-slate-50 border text-sm outline-none" />
+          <button type="submit" className="px-4 bg-slate-900 text-white font-bold rounded-xl text-xs">เพิ่ม</button>
+        </form>
+        <div className="space-y-2">
+          {resources.map(res => (
+            <div key={res.id} className="flex justify-between items-center p-3 bg-slate-50 rounded-2xl border">
+              <div>
+                <p className="text-sm font-bold">{res.name}</p>
+                <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">{res.status}</p>
+              </div>
+              <div className="flex gap-1">
+                <button onClick={() => setShowQRModal(res)} className="p-2 bg-white text-indigo-600 rounded-lg border shadow-sm hover:bg-indigo-50" title="ดู QR Code">
+                  <QrCode size={16} />
+                </button>
+                <button onClick={() => deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'resources', res.id))} className="p-2 text-red-300 hover:text-red-500">
+                  <Trash2 size={16} />
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      </section>
+    </div>
+  );
+
+  const BookingPass = () => (
+    <div className="max-w-md mx-auto py-8 animate-in fade-in zoom-in duration-500">
+       <div className="bg-white rounded-[2.5rem] overflow-hidden shadow-2xl border border-slate-100 relative">
+          <div className="bg-indigo-600 p-8 text-white text-center relative overflow-hidden">
+             <div className="absolute -top-10 -right-10 w-40 h-40 bg-white/10 rounded-full blur-3xl"></div>
+             <Ticket size={48} className="mx-auto mb-4 opacity-50" />
+             <h2 className="text-2xl font-black mb-1">ใบยืนยันการจอง</h2>
+             <p className="text-indigo-200 text-xs font-bold uppercase tracking-widest">SmartLab Booking Pass</p>
+          </div>
+          
+          <div className="p-8 space-y-6">
+             <div className="grid grid-cols-2 gap-6">
+                <div>
+                   <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">เครื่องมือ</p>
+                   <p className="text-lg font-bold text-slate-800">{activeBooking?.resourceName}</p>
                 </div>
-            );
-        };
-
-        const SecurityWrapper = ({ children, isBlurred }) => {
-            const [blurActive, setBlurActive] = useState(false);
-            const [warningMsg, setWarningMsg] = useState('');
-
-            useEffect(() => {
-                const handleContextMenu = (e) => e.preventDefault();
-                const handleKeyDown = (e) => {
-                    // Detect PrintScreen or Shortcuts
-                    if (
-                        e.key === 'PrintScreen' ||
-                        (e.ctrlKey && (e.key === 'p' || e.key === 's' || e.key === 'c' || e.key === 'u')) ||
-                        (e.metaKey && (e.key === 'p' || e.key === 's' || e.key === 'c' || e.key === 'u'))
-                    ) {
-                        e.preventDefault();
-                        setBlurActive(true);
-                        setWarningMsg('ห้ามบันทึกภาพหน้าจอ!');
-                        setTimeout(() => {
-                            setBlurActive(false);
-                            setWarningMsg('');
-                        }, 3000);
-                    }
-                };
-
-                const handleVisibilityChange = () => {
-                    if (document.hidden) {
-                        setBlurActive(true);
-                    } else {
-                        setTimeout(() => setBlurActive(false), 500); 
-                    }
-                };
-
-                const handleWindowBlur = () => setBlurActive(true);
-                const handleWindowFocus = () => setBlurActive(false);
-
-                document.addEventListener('contextmenu', handleContextMenu);
-                document.addEventListener('keydown', handleKeyDown);
-                document.addEventListener('visibilitychange', handleVisibilityChange);
-                window.addEventListener('blur', handleWindowBlur);
-                window.addEventListener('focus', handleWindowFocus);
-                document.addEventListener('touchstart', (e) => {
-                   // Optional: prevent zooming or double tap logic if needed
-                }, {passive: false});
-
-                return () => {
-                    document.removeEventListener('contextmenu', handleContextMenu);
-                    document.removeEventListener('keydown', handleKeyDown);
-                    document.removeEventListener('visibilitychange', handleVisibilityChange);
-                    window.removeEventListener('blur', handleWindowBlur);
-                    window.removeEventListener('focus', handleWindowFocus);
-                };
-            }, []);
-
-            return (
-                <div className="relative w-full min-h-screen bg-black text-white selection:bg-transparent select-none font-sans" onContextMenu={(e)=>e.preventDefault()}>
-                {(blurActive || isBlurred) && (
-                    <div className="fixed inset-0 z-[100] backdrop-blur-3xl bg-black/95 flex items-center justify-center">
-                    <div className="text-center p-8">
-                        <EyeOff size={64} className="mx-auto text-red-500 mb-4 animate-pulse" />
-                        <h2 className="text-3xl font-bold text-red-500">{warningMsg || 'Security Mode'}</h2>
-                        <p className="text-gray-400 mt-2">เนื้อหาถูกซ่อนเพื่อความปลอดภัย</p>
-                    </div>
-                    </div>
-                )}
-                {children}
+                <div>
+                   <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">นักศึกษา</p>
+                   <p className="text-lg font-bold text-slate-800">{activeBooking?.studentId}</p>
                 </div>
-            );
-        };
+                <div>
+                   <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">วันที่</p>
+                   <p className="text-lg font-bold text-slate-800">{activeBooking?.date}</p>
+                </div>
+                <div>
+                   <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">ช่วงเวลา</p>
+                   <p className="text-lg font-bold text-indigo-600">{activeBooking?.slot}</p>
+                </div>
+             </div>
 
-        // --- Main App Component ---
-        function App() {
-            const [user, setUser] = useState(null);
-            const [view, setView] = useState('landing');
-            const [viewLinkId, setViewLinkId] = useState('');
+             <div className="pt-6 border-t border-dashed border-slate-200">
+                <div className="bg-slate-50 p-6 rounded-3xl text-center space-y-4">
+                   <p className="text-xs font-bold text-slate-500">เมื่อถึงหน้าเครื่อง กรุณาสแกน QR Code<br/>ที่แปะไว้เพื่อเริ่มใช้งานจริง</p>
+                   <button 
+                    onClick={() => setView('scanner')}
+                    className="w-full py-4 bg-slate-900 text-white font-black rounded-2xl flex items-center justify-center gap-2 hover:bg-black transition-all shadow-lg shadow-slate-200"
+                   >
+                     <Camera size={20} /> สแกน QR Code
+                   </button>
+                   <button onClick={() => { setView('selection'); setSelectedResource(null); setActiveBooking(null); }} className="text-xs font-bold text-slate-400 hover:text-indigo-600">กลับหน้าหลัก</button>
+                </div>
+             </div>
+          </div>
+          
+          {/* Decorative notches for ticket look */}
+          <div className="absolute left-0 right-0 -bottom-1 h-2 flex gap-2 px-6">
+            {[...Array(20)].map((_, i) => (
+              <div key={i} className="flex-1 h-3 bg-slate-50 rounded-full"></div>
+            ))}
+          </div>
+       </div>
+    </div>
+  );
+
+  const ScannerView = () => (
+    <div className="fixed inset-0 bg-slate-900 z-[100] flex flex-col items-center justify-center p-6 text-white">
+        <div className="w-full max-w-md text-center">
+            <h2 className="text-2xl font-black mb-2">สแกนรหัสเครื่องมือ</h2>
+            <p className="text-slate-400 text-sm mb-10">นำกล้องไปสแกน QR Code ที่หน้าเครื่อง {activeBooking?.resourceName}</p>
             
-            // Admin State
-            const [secretMessage, setSecretMessage] = useState('');
-            const [selectedImage, setSelectedImage] = useState(null);
-            const [imagePreview, setImagePreview] = useState(null);
-            const [isUploading, setIsUploading] = useState(false);
-            const [uploadProgress, setUploadProgress] = useState(0); // Progress bar
-            const [timerSeconds, setTimerSeconds] = useState(60);
-            const [generatedLink, setGeneratedLink] = useState(null);
-            const [history, setHistory] = useState([]);
-            const fileInputRef = useRef(null);
+            <div className="relative aspect-square w-full border-4 border-white/20 rounded-[2rem] overflow-hidden bg-black/40 mb-10">
+                <div className="absolute inset-0 flex items-center justify-center">
+                    <div className="w-64 h-64 border-2 border-indigo-400 border-dashed rounded-3xl animate-pulse"></div>
+                    <div className="absolute top-1/2 left-0 right-0 h-0.5 bg-indigo-500 shadow-[0_0_15px_rgba(99,102,241,0.8)] animate-scan-line"></div>
+                </div>
+                <div className="absolute bottom-6 left-0 right-0 text-center">
+                   <p className="text-[10px] font-black uppercase tracking-[0.3em] opacity-40">Scanning for ID: {activeBooking?.resourceId}</p>
+                </div>
+            </div>
 
-            // Viewer State
-            const [linkData, setLinkData] = useState(null);
-            const [timeLeft, setTimeLeft] = useState(null);
-            const [isExpired, setIsExpired] = useState(false);
-            const [fetchError, setFetchError] = useState('');
+            <div className="space-y-4 px-4">
+                <button 
+                  onClick={() => verifyScan(activeBooking.resourceId)}
+                  className="w-full py-4 bg-indigo-600 text-white font-black rounded-2xl flex items-center justify-center gap-2 hover:bg-indigo-700 shadow-xl shadow-indigo-500/20"
+                >
+                    <CheckCircle2 size={20} /> [ จำลอง ] ตรวจพบรหัสถูกต้อง
+                </button>
+                <button 
+                  onClick={() => setView('pass')}
+                  className="w-full py-4 bg-white/10 text-white font-bold rounded-2xl hover:bg-white/20 transition-colors"
+                >
+                    ยกเลิก
+                </button>
+            </div>
+        </div>
+    </div>
+  );
 
-            // Auth Init
-            useEffect(() => {
-                const initAuth = async () => {
-                try {
-                    await signInAnonymously(auth);
-                } catch (error) {
-                    console.error("Auth Error:", error);
-                }
-                };
-                initAuth();
-                onAuthStateChanged(auth, setUser);
-            }, []);
+  // --- 6. Main Render ---
+  if (loading) return (
+    <div className="min-h-screen flex items-center justify-center bg-slate-50">
+      <Loader2 className="w-10 h-10 animate-spin text-indigo-600" />
+    </div>
+  );
 
-            // Handle URL Parameters
-            useEffect(() => {
-                const params = new URLSearchParams(window.location.search);
-                const id = params.get('id');
-                if (id) {
-                    setViewLinkId(id);
-                    setView('viewer');
-                }
-            }, []);
+  if (!isLoggedIn) return (
+    <div className="min-h-screen bg-slate-50 flex items-center justify-center p-6">
+      <div className="max-w-md w-full bg-white rounded-[2.5rem] p-10 shadow-xl border border-slate-100 animate-in fade-in zoom-in duration-500">
+        <div className="w-20 h-20 bg-indigo-600 rounded-3xl flex items-center justify-center text-white mx-auto mb-8 shadow-lg shadow-indigo-100"><LogIn size={40} /></div>
+        <h1 className="text-3xl font-black text-center text-slate-800 mb-2">SmartLab</h1>
+        <p className="text-slate-400 text-center text-sm font-medium mb-8">เข้าสู่ระบบเพื่อจองเครื่องมือวิทยาศาสตร์</p>
+        <form onSubmit={handleLogin} className="space-y-4">
+          <div className="space-y-1">
+            <label className="text-xs font-bold text-slate-400 uppercase tracking-widest px-2">รหัสนักศึกษา</label>
+            <input type="text" value={studentId} onChange={(e) => setStudentId(e.target.value)} placeholder="เช่น 64XXXXXX" className="w-full p-4 rounded-2xl bg-slate-50 border border-slate-200 text-lg font-bold outline-none focus:ring-2 focus:ring-indigo-500" required />
+          </div>
+          <button type="submit" className="w-full py-4 bg-indigo-600 text-white font-black rounded-2xl shadow-lg hover:bg-indigo-700 transition-colors">เริ่มต้นใช้งาน</button>
+        </form>
+      </div>
+    </div>
+  );
 
-            // Handle Image Selection
-            const handleImageSelect = (e) => {
-                const file = e.target.files[0];
-                if (file) {
-                    setSelectedImage(file);
-                    const reader = new FileReader();
-                    reader.onloadend = () => {
-                        setImagePreview(reader.result);
-                    };
-                    reader.readAsDataURL(file);
-                }
-            };
+  return (
+    <div className="min-h-screen bg-slate-50 text-slate-900 pb-24">
+      {/* Admin QR Modal */}
+      {showQRModal && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[200] flex items-center justify-center p-6">
+           <div className="bg-white rounded-[2.5rem] p-8 max-w-sm w-full text-center relative animate-in zoom-in duration-300 shadow-2xl">
+              <button onClick={() => setShowQRModal(null)} className="absolute top-6 right-6 p-2 text-slate-300 hover:text-slate-600"><X size={24}/></button>
+              <h3 className="text-xl font-black mb-1 text-slate-800">{showQRModal.name}</h3>
+              <p className="text-xs font-bold text-slate-400 mb-8 uppercase tracking-widest">Resource ID: {showQRModal.id}</p>
+              
+              <div className="bg-slate-50 p-4 rounded-3xl mb-8 border border-slate-100 flex items-center justify-center">
+                 <QRCodeImage value={showQRModal.id} size={180} />
+              </div>
+              
+              <p className="text-xs font-medium text-slate-500 mb-6 px-4">พิมพ์รหัส QR นี้ไปแปะหน้าเครื่องเพื่อให้<br/>นักศึกษาใช้สแกนยืนยันการเข้าใช้งาน</p>
+              
+              <button 
+                onClick={() => window.print()}
+                className="w-full py-4 bg-slate-900 text-white font-black rounded-2xl flex items-center justify-center gap-2 hover:bg-black transition-all shadow-lg shadow-slate-200"
+              >
+                <Printer size={18} /> สั่งพิมพ์ใบ QR Code
+              </button>
+           </div>
+        </div>
+      )}
 
-            const clearImage = () => {
-                setSelectedImage(null);
-                setImagePreview(null);
-                if (fileInputRef.current) fileInputRef.current.value = '';
-            };
+      {view === 'scanner' && <ScannerView />}
 
-            // Admin History Listener
-            useEffect(() => {
-                if (!user || view !== 'admin') return;
+      <header className="bg-white border-b border-slate-200 sticky top-0 z-50 shadow-sm">
+        <div className="max-w-2xl mx-auto px-6 h-16 flex items-center justify-between">
+          <div className="flex items-center gap-2 cursor-pointer" onClick={() => { setView('selection'); setSelectedResource(null); setActiveBooking(null); }}>
+            <div className="w-8 h-8 bg-indigo-600 rounded-lg flex items-center justify-center text-white shadow-lg"><Activity size={18} /></div>
+            <h1 className="font-bold text-lg tracking-tight">SmartLab</h1>
+          </div>
+          <div className="flex items-center gap-3">
+            <button onClick={() => setIsAdmin(!isAdmin)} className={`px-4 py-1.5 rounded-full text-[10px] font-black uppercase tracking-wider transition-all border ${isAdmin ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-slate-100 text-slate-500 border-slate-200'}`}>
+              {isAdmin ? 'ปิดโหมดแอดมิน' : 'โหมดแอดมิน'}
+            </button>
+            <button onClick={handleLogout} className="p-2 text-slate-400 hover:text-red-500 transition-colors" title="ออกจากระบบ"><StopCircle size={18}/></button>
+          </div>
+        </div>
+      </header>
 
-                const unsubscribe = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'links'), (snapshot) => {
-                const myLinks = [];
-                snapshot.forEach(doc => {
-                    const data = doc.data();
-                    if (data.adminId === user.uid) {
-                    myLinks.push({ id: doc.id, ...data });
-                    }
-                });
-                myLinks.sort((a, b) => (b.created?.seconds || 0) - (a.created?.seconds || 0));
-                setHistory(myLinks);
-                });
+      <main className="max-w-2xl mx-auto px-6 py-8">
+        {error && (
+          <div className="mb-6 p-4 bg-red-50 border border-red-100 text-red-600 rounded-2xl text-[11px] font-bold flex items-center gap-3 animate-in slide-in-from-top-2">
+            <AlertCircle size={16} className="shrink-0" />
+            <p className="flex-1">{String(error)}</p>
+            <button onClick={() => setError(null)} className="text-red-300 hover:text-red-500"><X size={14}/></button>
+          </div>
+        )}
 
-                return () => unsubscribe();
-            }, [user, view]);
-
-            // Viewer Logic
-            useEffect(() => {
-                if (view !== 'viewer' || !viewLinkId) return;
-
-                const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'links', viewLinkId);
-                
-                const unsubscribe = onSnapshot(docRef, async (docSnap) => {
-                if (!docSnap.exists()) {
-                    setFetchError('ไม่พบลิงก์นี้ หรือถูกลบไปแล้ว');
-                    return;
-                }
-                
-                const data = docSnap.data();
-                setLinkData(data);
-
-                if (data.status === 'new') {
-                    await updateDoc(docRef, {
-                    status: 'viewed',
-                    startedAt: serverTimestamp()
-                    });
-                } else if (data.status === 'viewed' && data.startedAt) {
-                    const start = data.startedAt.toMillis ? data.startedAt.toMillis() : Date.now();
-                    const durationMs = data.duration * 1000;
-                    const end = start + durationMs;
-                    const now = Date.now();
-                    const diff = Math.floor((end - now) / 1000);
-
-                    if (diff <= 0) {
-                        handleExpire(docRef, data);
-                    } else {
-                        setTimeLeft(diff);
-                        setIsExpired(false);
-                    }
-                } else if (data.status === 'expired') {
-                    setIsExpired(true);
-                    setTimeLeft(0);
-                }
-                });
-
-                return () => unsubscribe();
-            }, [view, viewLinkId]);
-
-            // Local Timer
-            useEffect(() => {
-                if (!linkData || isExpired || linkData.status === 'expired') return;
-
-                const interval = setInterval(() => {
-                if (linkData.startedAt) {
-                    const start = linkData.startedAt.toMillis ? linkData.startedAt.toMillis() : Date.now();
-                    const durationMs = linkData.duration * 1000;
-                    const end = start + durationMs;
-                    const now = Date.now();
-                    const diff = Math.floor((end - now) / 1000);
-
-                    if (diff <= 0) {
-                        clearInterval(interval);
-                        setTimeLeft(0);
-                        setIsExpired(true);
-                        const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'links', viewLinkId);
-                        handleExpire(docRef, linkData);
-                    } else {
-                        setTimeLeft(diff);
-                    }
-                }
-                }, 1000);
-                return () => clearInterval(interval);
-            }, [linkData, isExpired, viewLinkId]);
-
-            const handleExpire = async (docRef, data) => {
-                try {
-                    await updateDoc(docRef, {
-                        status: 'expired',
-                        message: deleteField(),
-                        imageUrl: deleteField(),
-                        storagePath: deleteField(),
-                        expiredAt: serverTimestamp()
-                    });
-                    if (data?.storagePath) {
-                        const imageRef = ref(storage, data.storagePath);
-                        deleteObject(imageRef).catch((e) => console.log("Image delete error", e));
-                    }
-                    setIsExpired(true);
-                } catch (e) {
-                    console.error("Expire error", e);
-                }
-            };
-
-            // --- History Management ---
-            const handleDeleteHistoryItem = async (item) => {
-                if(!confirm(`ต้องการลบรายการ ${item.id} ใช่หรือไม่? \n(หากยังไม่หมดอายุ ผู้รับจะไม่สามารถดูได้อีก)`)) return;
-                
-                try {
-                    // 1. Delete Firestore Doc
-                    const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'links', item.id);
-                    await deleteDoc(docRef);
-
-                    // 2. Delete Storage Image (if exists)
-                    if (item.storagePath) {
-                        const imageRef = ref(storage, item.storagePath);
-                        deleteObject(imageRef).catch(err => console.log("Storage cleanup error:", err));
-                    }
-                } catch (error) {
-                    alert('เกิดข้อผิดพลาดในการลบ: ' + error.message);
-                }
-            };
-
-            const handleClearAllHistory = async () => {
-                if(!confirm("⚠️ ยืนยันการล้างประวัติทั้งหมด? \nรายการและรูปภาพทั้งหมดจะถูกลบถาวร!")) return;
-                
-                try {
-                    const deletePromises = history.map(item => {
-                        // Create promises for deletion
-                        const docPromise = deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'links', item.id));
-                        let storagePromise = Promise.resolve();
-                        if (item.storagePath) {
-                            storagePromise = deleteObject(ref(storage, item.storagePath)).catch(() => {});
-                        }
-                        return Promise.all([docPromise, storagePromise]);
-                    });
-                    
-                    await Promise.all(deletePromises);
-                    alert("ล้างประวัติเรียบร้อยแล้ว");
-                } catch (error) {
-                    alert('เกิดข้อผิดพลาด: ' + error.message);
-                }
-            };
-
-            // --- Create Link Logic (Updated for Upload Progress) ---
-            const createLink = async () => {
-                if (!secretMessage && !selectedImage) return;
-                setIsUploading(true);
-                setUploadProgress(0);
-                
-                const newId = Math.random().toString(36).substring(2, 10).toUpperCase();
-                let storagePath = null;
-
-                try {
-                    // Logic to save data after upload
-                    const saveToFirestore = async (downloadUrl = null) => {
-                        await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'links', newId), {
-                            adminId: user.uid,
-                            message: secretMessage,
-                            imageUrl: downloadUrl,
-                            storagePath: storagePath,
-                            duration: timerSeconds,
-                            created: serverTimestamp(),
-                            status: 'new',
-                            startedAt: null
-                        });
-                        setGeneratedLink(newId);
-                        setSecretMessage('');
-                        clearImage();
-                        setIsUploading(false);
-                        setUploadProgress(0);
-                    };
-
-                    // Upload Image if selected with Progress
-                    if (selectedImage) {
-                        storagePath = `secrets/${user.uid}/${newId}_${selectedImage.name}`;
-                        const storageRef = ref(storage, storagePath);
-                        const uploadTask = uploadBytesResumable(storageRef, selectedImage);
-
-                        uploadTask.on('state_changed', 
-                            (snapshot) => {
-                                const progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
-                                setUploadProgress(progress);
-                            }, 
-                            (error) => {
-                                console.error("Upload error:", error);
-                                alert("อัปโหลดรูปภาพล้มเหลว: " + error.message);
-                                setIsUploading(false);
-                            }, 
-                            async () => {
-                                const downloadUrl = await getDownloadURL(uploadTask.snapshot.ref);
-                                await saveToFirestore(downloadUrl);
-                            }
-                        );
-                    } else {
-                        await saveToFirestore(null);
-                    }
-
-                } catch (error) {
-                    console.error("Error creating link:", error);
-                    alert("เกิดข้อผิดพลาด: " + error.message);
-                    setIsUploading(false);
-                }
-            };
-
-            const formatTime = (seconds) => {
-                if (seconds === null || seconds < 0) return "00:00";
-                const m = Math.floor(seconds / 60);
-                const s = seconds % 60;
-                return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
-            };
-
-            const getShareUrl = (id) => {
-                const url = new URL(window.location.href);
-                url.searchParams.set('id', id);
-                return url.toString();
-            };
-
-            // --- Views ---
-
-            if (view === 'landing') {
-                return (
-                <SecurityWrapper>
-                    <div className="flex flex-col items-center justify-center min-h-screen p-6 bg-gradient-to-b from-gray-900 via-black to-gray-900">
-                    <div className="max-w-md w-full text-center space-y-8">
-                        <div className="flex justify-center">
-                            <div className="p-4 bg-emerald-500/10 rounded-full ring-1 ring-emerald-500/50 shadow-lg shadow-emerald-500/20">
-                                <Shield className="text-emerald-500 w-16 h-16" />
-                            </div>
+        {isAdmin ? <AdminPanel /> : (
+          view === 'pass' ? <BookingPass /> : (
+            !selectedResource ? (
+              <div className="space-y-6">
+                <div className="bg-gradient-to-br from-indigo-600 to-indigo-800 p-8 rounded-[2.5rem] text-white shadow-xl relative overflow-hidden shadow-indigo-200">
+                    <div className="absolute top-0 right-0 w-32 h-32 bg-white/10 rounded-full -mr-16 -mt-16 blur-2xl"></div>
+                    <div className="relative z-10">
+                        <p className="text-xs font-bold uppercase tracking-widest opacity-70 mb-2">Student Profile</p>
+                        <h2 className="text-3xl font-black mb-1">{studentId}</h2>
+                        <div className="flex items-center gap-2 text-indigo-200 text-[10px] font-black uppercase tracking-widest mt-4 bg-white/10 w-fit px-3 py-1 rounded-full border border-white/10">
+                            <div className="w-1.5 h-1.5 bg-green-400 rounded-full animate-pulse"></div>
+                            <span>Online Real-time System</span>
                         </div>
-                        
+                    </div>
+                </div>
+
+                <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] ml-2">รายการเครื่องมือวิทยาศาสตร์</h3>
+                <div className="grid grid-cols-1 gap-4">
+                  {resources.map(res => (
+                    <button key={res.id} onClick={() => { setSelectedResource(res); setView('calendar'); }} className="group bg-white p-5 rounded-[2rem] border border-slate-100 shadow-sm hover:shadow-xl hover:border-indigo-100 transition-all text-left flex items-center justify-between">
+                      <div className="flex items-center gap-4">
+                        <div className={`w-14 h-14 rounded-2xl flex items-center justify-center transition-all ${res.status === 'in_use' ? 'bg-orange-50 text-orange-500 shadow-inner' : 'bg-slate-50 text-slate-400 group-hover:bg-indigo-600 group-hover:text-white'}`}><Monitor size={28} /></div>
                         <div>
-                            <h1 className="text-4xl font-bold text-white mb-2 tracking-tight">Secret Link</h1>
-                            <p className="text-gray-400">ส่งความลับแบบ "เปิดแล้วทำลายตัวเอง"</p>
+                          <h3 className="font-bold text-lg text-slate-800 group-hover:text-indigo-600 transition-colors">{res.name}</h3>
+                          <div className="flex items-center gap-2 mt-1">
+                             <div className={`w-2 h-2 rounded-full ${res.status === 'in_use' ? 'bg-orange-400 animate-pulse' : 'bg-green-400'}`}></div>
+                             <span className={`text-[10px] font-bold uppercase tracking-wider ${res.status === 'in_use' ? 'text-orange-500' : 'text-green-500'}`}>{res.status === 'in_use' ? `In Use by ${res.currentStudent}` : 'Available for Booking'}</span>
+                          </div>
                         </div>
-
-                        <div className="space-y-4 pt-4">
-                        <button 
-                            onClick={() => setView('admin')}
-                            className="w-full py-4 bg-emerald-600 hover:bg-emerald-500 active:scale-95 text-white font-bold rounded-xl transition-all shadow-lg shadow-emerald-900/20 flex items-center justify-center gap-2 group"
-                        >
-                            <Lock className="w-5 h-5 group-hover:rotate-12 transition-transform" /> สร้างลิงก์ลับ (Admin)
-                        </button>
-                        
-                        <div className="relative py-2">
-                            <div className="absolute inset-0 flex items-center"><div className="w-full border-t border-gray-800"></div></div>
-                            <div className="relative flex justify-center text-xs uppercase tracking-widest text-gray-600 bg-black px-2">หรือ เปิดลิงก์</div>
+                      </div>
+                      <ChevronLeft size={20} className="text-slate-200 group-hover:text-indigo-600 rotate-180 transition-all" />
+                    </button>
+                  ))}
+                  {resources.length === 0 && (
+                    <div className="py-20 text-center bg-white rounded-[2.5rem] border border-dashed border-slate-200">
+                        <p className="text-slate-400 font-bold text-xs uppercase tracking-widest">ไม่พบรายการเครื่องมือ</p>
+                    </div>
+                  )}
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-6 animate-in slide-in-from-right-4 duration-300">
+                <button onClick={() => { setView('selection'); setSelectedResource(null); }} className="flex items-center gap-2 text-slate-400 hover:text-indigo-600 text-[10px] font-black uppercase tracking-widest transition-colors"><ChevronLeft size={16} /> กลับไปหน้าเลือกเครื่อง</button>
+                <div className="bg-white p-6 rounded-[2.5rem] border border-slate-100 shadow-sm space-y-6">
+                  <div className="flex items-center gap-3"><Monitor size={20} className="text-indigo-600" /><div><h2 className="text-xl font-bold text-slate-800">{selectedResource.name}</h2><p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">ปฏิทินการจองใช้งาน</p></div></div>
+                  
+                  <div className="relative">
+                    <input type="date" value={selectedDate} onChange={(e) => setSelectedDate(e.target.value)} className="w-full p-4 pl-12 rounded-2xl bg-slate-50 border border-slate-200 text-lg font-bold text-slate-800 outline-none focus:ring-2 focus:ring-indigo-500" />
+                    <CalendarIcon className="absolute left-4 top-1/2 -translate-y-1/2 text-indigo-500" size={20}/>
+                  </div>
+                  
+                  {!isDateAvailable ? (
+                    <div className="p-10 bg-orange-50 border border-orange-100 rounded-3xl text-center space-y-2">
+                        <AlertCircle size={32} className="mx-auto text-orange-400 opacity-50" />
+                        <p className="font-bold text-orange-700">ไม่เปิดให้บริการในวันที่เลือก</p>
+                        <p className="text-[10px] font-medium text-orange-600 opacity-70">โปรดเลือกวันเปิดทำการ (จันทร์-ศุกร์) หรือตามประกาศแอดมิน</p>
+                    </div>
+                  ) : (
+                    <div className="space-y-6">
+                      <div className="bg-indigo-600 p-6 rounded-3xl text-white shadow-lg relative overflow-hidden">
+                        <div className="flex justify-between items-end">
+                            <div><p className="text-[10px] font-bold uppercase opacity-60 mb-1">Quota Usage</p><p className="text-3xl font-black">{usedHours} <span className="text-lg opacity-40">/ {settings.maxHours}</span></p></div>
+                            <div className="text-right text-[10px] font-bold uppercase opacity-60">ชั่วโมงที่ใช้ไปวันนี้</div>
                         </div>
+                        <div className="w-full h-1 bg-white/20 mt-4 rounded-full overflow-hidden">
+                            <div className="h-full bg-white transition-all duration-700" style={{ width: `${(usedHours/settings.maxHours)*100}%` }}></div>
+                        </div>
+                      </div>
 
-                        <div className="bg-gray-900/50 p-2 rounded-xl border border-gray-800 flex gap-2">
-                            <input 
-                            type="text" 
-                            placeholder="วางรหัสลิงก์ที่นี่..." 
-                            className="flex-1 bg-transparent text-white px-4 py-2 focus:outline-none placeholder-gray-600 text-center font-mono uppercase"
-                            onChange={(e) => setViewLinkId(e.target.value.trim())}
-                            />
-                            <button 
-                            onClick={() => {
-                                if(viewLinkId) setView('viewer');
-                            }}
-                            disabled={!viewLinkId}
-                            className="px-6 bg-gray-800 hover:bg-gray-700 disabled:opacity-50 text-white font-medium rounded-lg transition-colors"
-                            >
-                            เปิด
+                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                        {timeSlots.map(slot => {
+                          const booking = bookings.find(b => b.date === selectedDate && b.slot === slot && b.resourceId === selectedResource.id);
+                          const isMine = booking?.studentId === studentId;
+                          const isTaken = booking && !isMine;
+                          return (
+                            <button key={slot} onClick={() => toggleBooking(slot)} disabled={isTaken} className={`relative p-5 rounded-2xl border-2 transition-all flex flex-col items-center justify-center gap-1 shadow-sm ${isMine ? 'bg-indigo-50 border-indigo-600 text-indigo-700' : isTaken ? 'bg-slate-100 border-slate-100 text-slate-300 opacity-40 cursor-not-allowed' : 'bg-white border-slate-100 text-slate-600 hover:border-indigo-300 hover:bg-indigo-50/20'}`}>
+                              <span className="text-lg font-black">{slot}</span>
+                              <span className="text-[10px] font-bold uppercase tracking-tighter">{isMine ? 'คุณจองแล้ว' : isTaken ? `Std: ${booking.studentId.slice(-4)}` : 'จองเวลา'}</span>
+                              {isMine && <CheckCircle2 className="absolute top-2 right-2 w-4 h-4 text-indigo-600 animate-in zoom-in" />}
                             </button>
-                        </div>
-                        </div>
+                          );
+                        })}
+                      </div>
                     </div>
-                    </div>
-                </SecurityWrapper>
-                );
-            }
+                  )}
+                </div>
+              </div>
+            )
+          )
+        )}
+      </main>
 
-            // --- Admin View ---
-            if (view === 'admin') {
-                return (
-                    <SecurityWrapper>
-                        <div className="min-h-screen bg-black p-4 pb-20">
-                            <div className="max-w-2xl mx-auto space-y-6 pt-12">
-                                {/* Header */}
-                                <div className="flex justify-between items-center mb-8">
-                                    <button onClick={() => setView('landing')} className="text-gray-400 hover:text-white flex items-center gap-2">
-                                        ← กลับหน้าแรก
-                                    </button>
-                                    <div className="text-emerald-500 font-bold flex items-center gap-2">
-                                        <Shield size={16}/> Admin Console
-                                    </div>
-                                </div>
+      {/* Info Footer */}
+      <footer className="fixed bottom-0 left-0 right-0 bg-white/90 backdrop-blur-md border-t py-4 px-6 z-40 shadow-inner">
+        <div className="max-w-2xl mx-auto flex justify-between items-center text-[10px] font-bold text-slate-400 uppercase tracking-[0.2em]">
+          <div className="flex items-center gap-2"><User size={12} className="text-indigo-400" /> นักศึกษา: {studentId || 'Not Logged In'}</div>
+          <div className="flex items-center gap-1.5 text-green-500">
+            <div className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse"></div>
+            System Synced
+          </div>
+        </div>
+      </footer>
 
-                                {/* Create Card */}
-                                <div className="bg-gray-900 border border-gray-800 rounded-2xl p-6 shadow-xl">
-                                    <h2 className="text-xl font-bold text-white mb-6 flex items-center gap-2">
-                                        <Lock size={20} className="text-emerald-500" /> สร้างความลับใหม่
-                                    </h2>
-
-                                    {!generatedLink ? (
-                                        <div className="space-y-6">
-                                            {/* Text Input */}
-                                            <div>
-                                                <label className="block text-xs text-gray-500 uppercase tracking-wider mb-2">ข้อความ (Optional)</label>
-                                                <textarea 
-                                                    value={secretMessage}
-                                                    onChange={(e) => setSecretMessage(e.target.value)}
-                                                    className="w-full h-24 bg-black border border-gray-700 rounded-xl p-4 text-white focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 focus:outline-none resize-none transition-all"
-                                                    placeholder="พิมพ์ความลับของคุณ..."
-                                                />
-                                            </div>
-
-                                            {/* Image Upload */}
-                                            <div>
-                                                <label className="block text-xs text-gray-500 uppercase tracking-wider mb-2">รูปภาพ (Optional - ไม่จำกัดขนาด)</label>
-                                                {!imagePreview ? (
-                                                    <div 
-                                                        onClick={() => fileInputRef.current.click()}
-                                                        className="w-full h-32 border-2 border-dashed border-gray-700 rounded-xl flex flex-col items-center justify-center cursor-pointer hover:border-emerald-500 hover:bg-gray-800/50 transition-all group"
-                                                    >
-                                                        <ImageIcon className="w-8 h-8 text-gray-500 group-hover:text-emerald-500 mb-2" />
-                                                        <span className="text-sm text-gray-500 group-hover:text-gray-300">คลิกเพื่อเลือกรูปภาพ</span>
-                                                    </div>
-                                                ) : (
-                                                    <div className="relative w-full rounded-xl overflow-hidden border border-gray-700 group">
-                                                        <img src={imagePreview} alt="Preview" className="w-full h-auto max-h-[300px] object-contain bg-black/50" />
-                                                        <button 
-                                                            onClick={clearImage}
-                                                            className="absolute top-2 right-2 p-1 bg-red-600 rounded-full text-white opacity-0 group-hover:opacity-100 transition-opacity"
-                                                        >
-                                                            <X size={16} />
-                                                        </button>
-                                                    </div>
-                                                )}
-                                                <input 
-                                                    type="file" 
-                                                    ref={fileInputRef}
-                                                    onChange={handleImageSelect}
-                                                    accept="image/*"
-                                                    className="hidden" 
-                                                />
-                                            </div>
-                                            
-                                            <div>
-                                                <label className="block text-xs text-gray-500 uppercase tracking-wider mb-2">ระยะเวลาทำลายตัวเอง (หลังเปิดอ่าน)</label>
-                                                <div className="grid grid-cols-5 gap-2">
-                                                    {[5, 10, 30, 60, 300].map(s => (
-                                                        <button 
-                                                            key={s}
-                                                            onClick={() => setTimerSeconds(s)}
-                                                            className={`py-2 px-1 rounded-lg text-sm font-medium transition-all ${timerSeconds === s ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-900/40' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`}
-                                                        >
-                                                            {s < 60 ? `${s} วิ` : `${s/60} นาที`}
-                                                        </button>
-                                                    ))}
-                                                </div>
-                                            </div>
-
-                                            <button 
-                                                onClick={createLink}
-                                                disabled={(!secretMessage && !selectedImage) || isUploading}
-                                                className="w-full py-4 bg-white text-black font-bold rounded-xl hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors shadow-lg flex items-center justify-center gap-2 relative overflow-hidden"
-                                            >
-                                                {isUploading && (
-                                                    <div 
-                                                        className="absolute inset-0 bg-emerald-500/20 transition-all duration-300" 
-                                                        style={{width: `${uploadProgress}%`}}
-                                                    ></div>
-                                                )}
-                                                <div className="relative flex items-center gap-2 z-10">
-                                                    {isUploading ? (
-                                                        <>
-                                                            <Loader2 className="animate-spin" size={20} />
-                                                            {uploadProgress < 100 ? `กำลังอัปโหลด... ${Math.round(uploadProgress)}%` : 'กำลังบันทึกข้อมูล...'}
-                                                        </>
-                                                    ) : (
-                                                        'สร้างลิงก์ลับ'
-                                                    )}
-                                                </div>
-                                            </button>
-                                        </div>
-                                    ) : (
-                                        <div className="text-center py-8 animate-in fade-in zoom-in duration-300">
-                                            <div className="w-16 h-16 bg-emerald-500/20 rounded-full flex items-center justify-center mx-auto mb-4 text-emerald-500">
-                                                <CheckCircle size={32} />
-                                            </div>
-                                            <h3 className="text-2xl font-bold text-white mb-2">สร้างสำเร็จ!</h3>
-                                            <p className="text-gray-400 mb-6">ส่ง Link นี้ให้เพื่อน เมื่อเพื่อนเปิด เวลาจะนับถอยหลังทันที</p>
-                                            
-                                            <div className="bg-black border border-gray-700 p-4 rounded-xl flex flex-col gap-4 mb-6">
-                                                <div className="text-sm text-gray-500 break-all bg-gray-900 p-2 rounded border border-gray-800">
-                                                    {getShareUrl(generatedLink)}
-                                                </div>
-                                                <div className="flex justify-center gap-2">
-                                                    <button 
-                                                        onClick={() => {
-                                                            navigator.clipboard.writeText(getShareUrl(generatedLink));
-                                                            alert('คัดลอก Link แล้ว');
-                                                        }}
-                                                        className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 rounded-lg text-white font-bold transition-colors flex items-center gap-2"
-                                                    >
-                                                        <Copy size={16} /> คัดลอก Link
-                                                    </button>
-                                                     <button 
-                                                        onClick={() => {
-                                                            navigator.clipboard.writeText(generatedLink);
-                                                            alert('คัดลอกรหัสแล้ว');
-                                                        }}
-                                                        className="px-4 py-2 bg-gray-800 hover:bg-gray-700 rounded-lg text-white transition-colors"
-                                                    >
-                                                        คัดลอกเฉพาะรหัส
-                                                    </button>
-                                                </div>
-                                            </div>
-
-                                            <button 
-                                                onClick={() => {
-                                                    setGeneratedLink(null);
-                                                    setSecretMessage('');
-                                                    clearImage();
-                                                }}
-                                                className="text-gray-500 hover:text-white underline text-sm"
-                                            >
-                                                สร้างเพิ่มอีก
-                                            </button>
-                                        </div>
-                                    )}
-                                </div>
-
-                                {/* History Section */}
-                                <div className="space-y-4">
-                                    <div className="flex justify-between items-end px-2">
-                                        <h3 className="text-lg font-bold text-gray-400 flex items-center gap-2">
-                                            <History size={18} /> ประวัติการส่ง
-                                        </h3>
-                                        {history.length > 0 && (
-                                            <button 
-                                                onClick={handleClearAllHistory}
-                                                className="text-xs text-red-400 hover:text-red-300 underline flex items-center gap-1"
-                                            >
-                                                <Trash2 size={12} /> ล้างประวัติทั้งหมด
-                                            </button>
-                                        )}
-                                    </div>
-                                    
-                                    <div className="space-y-3">
-                                        {history.length === 0 && (
-                                            <div className="text-center py-8 text-gray-600 bg-gray-900/30 rounded-xl border border-dashed border-gray-800">
-                                                ยังไม่มีประวัติ
-                                            </div>
-                                        )}
-                                        {history.map((item) => (
-                                            <div key={item.id} className="bg-gray-900/50 border border-gray-800 p-4 rounded-xl flex items-center justify-between hover:border-gray-700 transition-colors group">
-                                                <div>
-                                                    <div className="flex items-center gap-3 mb-1">
-                                                        <span className="font-mono text-emerald-500 font-bold">{item.id}</span>
-                                                        {item.imageUrl && <ImageIcon size={12} className="text-gray-400" />}
-                                                        {item.status === 'new' && <span className="text-[10px] bg-blue-500/20 text-blue-400 px-2 py-0.5 rounded-full border border-blue-500/20">ยังไม่ถูกเปิด</span>}
-                                                        {item.status === 'viewed' && <span className="text-[10px] bg-yellow-500/20 text-yellow-400 px-2 py-0.5 rounded-full border border-yellow-500/20 animate-pulse">กำลังดู...</span>}
-                                                        {item.status === 'expired' && <span className="text-[10px] bg-red-500/20 text-red-400 px-2 py-0.5 rounded-full border border-red-500/20">ลบแล้ว</span>}
-                                                    </div>
-                                                    <div className="text-xs text-gray-500">
-                                                        {new Date(item.created?.seconds * 1000).toLocaleString('th-TH')}
-                                                    </div>
-                                                </div>
-                                                <div className="flex items-center gap-4">
-                                                    <div className="text-right text-xs text-gray-600">
-                                                        {item.status === 'expired' ? 'Deleted' : `${item.duration}s timer`}
-                                                    </div>
-                                                    <button 
-                                                        onClick={() => handleDeleteHistoryItem(item)}
-                                                        className="p-2 text-gray-600 hover:text-red-500 hover:bg-red-500/10 rounded-lg transition-colors"
-                                                        title="ลบรายการนี้"
-                                                    >
-                                                        <Trash2 size={16} />
-                                                    </button>
-                                                </div>
-                                            </div>
-                                        ))}
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                    </SecurityWrapper>
-                );
-            }
-
-            // --- Viewer View ---
-            if (view === 'viewer') {
-                return (
-                    <SecurityWrapper>
-                        <Watermark text={viewLinkId} />
-                        <div className="min-h-screen flex flex-col items-center justify-center p-4">
-                            
-                            {/* Navbar */}
-                            <div className="fixed top-0 left-0 right-0 p-4 flex justify-between z-50">
-                                <div className="font-mono text-xs text-gray-600">ID: {viewLinkId}</div>
-                                {/* Removed Home/Back button */}
-                            </div>
-
-                            {fetchError ? (
-                                <div className="text-center text-red-500 space-y-4">
-                                    <XCircle size={64} className="mx-auto" />
-                                    <h2 className="text-2xl font-bold">{fetchError}</h2>
-                                    {/* Removed Return to Home button */}
-                                </div>
-                            ) : !linkData ? (
-                                <div className="animate-pulse flex flex-col items-center">
-                                    <div className="w-12 h-12 border-4 border-emerald-500 border-t-transparent rounded-full animate-spin mb-4"></div>
-                                    <p className="text-emerald-500 font-mono">กำลังถอดรหัส...</p>
-                                </div>
-                            ) : isExpired || linkData.status === 'expired' ? (
-                                <div className="text-center max-w-md w-full p-8 bg-red-900/10 border border-red-900/50 rounded-2xl backdrop-blur-sm">
-                                    <Lock size={64} className="mx-auto text-red-600 mb-6" />
-                                    <h2 className="text-3xl font-bold text-red-500 mb-2">ข้อความถูกทำลายแล้ว</h2>
-                                    <p className="text-gray-400">เนื้อหาในลิงก์นี้หมดอายุและถูกลบออกจากเซิร์ฟเวอร์อย่างถาวร</p>
-                                </div>
-                            ) : (
-                                <div className="w-full max-w-3xl relative">
-                                    {/* Timer Card */}
-                                    <div className="absolute -top-20 left-1/2 -translate-x-1/2 bg-gray-900 border border-emerald-900/50 px-6 py-2 rounded-full flex items-center gap-3 shadow-lg shadow-emerald-900/20 z-10">
-                                        <Clock size={16} className="text-emerald-500 animate-pulse" />
-                                        <span className={`font-mono font-bold text-xl ${timeLeft <= 10 ? 'text-red-500' : 'text-emerald-400'}`}>
-                                            {formatTime(timeLeft)}
-                                        </span>
-                                    </div>
-
-                                    {/* Content Card */}
-                                    <div className="bg-gray-900/80 border border-gray-800 p-8 md:p-12 rounded-3xl shadow-2xl relative overflow-hidden group">
-                                        <div className="absolute inset-0 bg-gradient-to-br from-emerald-500/5 to-transparent pointer-events-none"></div>
-                                        
-                                        <h3 className="text-gray-500 text-xs uppercase tracking-[0.3em] mb-8 text-center border-b border-gray-800 pb-4">
-                                            Secure Transmission
-                                        </h3>
-                                        
-                                        <div className="flex flex-col items-center gap-8">
-                                            {/* Image Display */}
-                                            {linkData.imageUrl && (
-                                                <div className="relative w-full rounded-xl overflow-hidden border border-gray-700 bg-black/50">
-                                                    <img 
-                                                        src={linkData.imageUrl} 
-                                                        alt="Secure Content" 
-                                                        className="w-full h-auto max-h-[70vh] object-contain pointer-events-none select-none"
-                                                        style={{ WebkitTouchCallout: 'none', WebkitUserSelect: 'none', userSelect: 'none' }}
-                                                        draggable="false"
-                                                        onContextMenu={(e) => e.preventDefault()}
-                                                        onTouchStart={(e) => {
-                                                             if(e.touches.length > 1) e.preventDefault();
-                                                        }}
-                                                    />
-                                                </div>
-                                            )}
-
-                                            {/* Text Display */}
-                                            {linkData.message && (
-                                                <div className="text-2xl md:text-4xl font-bold text-white text-center leading-relaxed font-sans break-words w-full">
-                                                    {linkData.message}
-                                                </div>
-                                            )}
-                                        </div>
-
-                                        <div className="mt-12 flex justify-center items-center gap-2 text-xs text-red-500/60 font-mono">
-                                            <AlertTriangle size={12} />
-                                            SELF-DESTRUCT SEQUENCE INITIATED
-                                        </div>
-                                    </div>
-
-                                    <p className="text-center text-gray-600 text-xs mt-6">
-                                        ห้ามกด Back, ห้าม Refresh, ห้ามสลับหน้าจอ (เวลาจะยังเดินต่อ)
-                                    </p>
-                                </div>
-                            )}
-                        </div>
-                    </SecurityWrapper>
-                );
-            }
+      {/* Internal Custom Styles */}
+      <style>{`
+        @keyframes scan-line {
+          0% { top: 10%; }
+          100% { top: 90%; }
         }
+        .animate-scan-line {
+          animation: scan-line 2s linear infinite;
+        }
+        @media print {
+          body * { visibility: hidden; }
+          #app-root, header, footer, main { display: none !important; }
+          .fixed.inset-0.z-\[200\] { visibility: visible !important; position: absolute; left: 0; top: 0; display: flex !important; background: white !important; }
+          .fixed.inset-0.z-\[200\] * { visibility: visible !important; }
+          .fixed.inset-0.z-\[200\] button { display: none !important; }
+          .fixed.inset-0.z-\[200\] .bg-white { box-shadow: none !important; border: none !important; }
+        }
+      `}</style>
+    </div>
+  );
+};
 
-        const root = createRoot(document.getElementById('root'));
-        root.render(<App />);
-    </script>
-</body>
-</html>
+export default App;
