@@ -723,14 +723,14 @@
                             {/* Navbar */}
                             <div className="fixed top-0 left-0 right-0 p-4 flex justify-between z-50">
                                 <div className="font-mono text-xs text-gray-600">ID: {viewLinkId}</div>
-                                <button onClick={() => window.location.href = window.location.pathname} className="text-xs text-gray-600 hover:text-white">Home</button>
+                                {/* Removed Home/Back button */}
                             </div>
 
                             {fetchError ? (
                                 <div className="text-center text-red-500 space-y-4">
                                     <XCircle size={64} className="mx-auto" />
                                     <h2 className="text-2xl font-bold">{fetchError}</h2>
-                                    <button onClick={() => window.location.href = window.location.pathname} className="text-gray-400 hover:text-white underline">กลับไปหน้าแรก</button>
+                                    {/* Removed Return to Home button */}
                                 </div>
                             ) : !linkData ? (
                                 <div className="animate-pulse flex flex-col items-center">
