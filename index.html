@@ -263,6 +263,7 @@
             const todayStr = getLocalDateString();
             const now = new Date();
             const currentHm = now.getHours().toString().padStart(2,'0') + ':' + now.getMinutes().toString().padStart(2,'0');
+            const systemEndTime = window.state.settings.endTime || "23:59";
 
             // Filter in-use resources
             const inUseResources = window.state.resources.filter(r => r.status === 'in_use');
@@ -277,16 +278,10 @@
                 );
 
                 if (activeBookings.length > 0) {
-                    // Find max end time across all active bookings
-                    let maxEnd = "00:00";
-                    activeBookings.forEach(b => {
-                        let end = b.slot_end || addMinutes(b.slot, 59);
-                        if (end > maxEnd) maxEnd = end;
-                    });
-
-                    // If current time > max end time, clear status
-                    if (currentHm > maxEnd) {
-                        console.log(`Auto-clearing resource ${res.name} because ${currentHm} > ${maxEnd}`);
+                    // Updated logic: Check if current time > SYSTEM END TIME (Set Time)
+                    // Allows users to stay active until the new closing time, even if booking slot ended earlier
+                    if (currentHm > systemEndTime) {
+                        console.log(`Auto-clearing resource ${res.name} because ${currentHm} > ${systemEndTime} (System Close)`);
                         await updateDoc(doc(db, 'artifacts', fbId, 'public', 'data', 'resources', res.id), { 
                             status: 'idle', 
                             currentStudent: null, 
@@ -294,9 +289,7 @@
                         });
                     }
                 } else {
-                    // Fallback: If resource is 'in_use' but no checked_in bookings exist for today (maybe cleared manually or date changed), reset it.
-                    // To be safe, we check if startedAt is from a previous date? 
-                    // Simple check: If date is not match, we could clear, but let's stick to time check for now.
+                    // Fallback
                 }
             }
         };
@@ -1539,16 +1532,12 @@
             const isToday = bookingDate === todayStr;
 
             // NEW: Time check logic for button restriction
-            let maxEnd = "00:00";
-            if (window.state.activeBookings.length > 0) {
-                window.state.activeBookings.forEach(b => {
-                    let end = b.slot_end || addMinutes(b.slot, 59);
-                    if (end > maxEnd) maxEnd = end;
-                });
-            }
+            // Updated to use SYSTEM END TIME instead of booking slot time
+            const systemEndTime = window.state.settings.endTime || "23:59";
+            
             const now = new Date();
             const currentHm = now.getHours().toString().padStart(2,'0') + ':' + now.getMinutes().toString().padStart(2,'0');
-            const isTimeOver = currentHm > maxEnd;
+            const isTimeOver = currentHm > systemEndTime;
 
             return `
                 <div class="max-w-xs mx-auto animate-in zoom-in duration-300 page-transition">
