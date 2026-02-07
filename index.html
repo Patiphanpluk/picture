@@ -185,7 +185,8 @@
             isLoading: false
         };
 
-        const DAYS_TH = ["อาทิตย์", "จันทร์", "อังคาร", "พุธ", "พฤหัสบดี", "ศุกร์", "เสาร์"];
+        // ปรับแก้: เปลี่ยนเป็นตัวย่อตามที่กำหนด
+        const DAYS_TH = ["อา.", "จ.", "อ.", "พ.", "พฤ.", "ศ.", "ส."];
         const MONTHS_TH = ["มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน", "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม"];
 
         // --- Logic: Utilities ---
@@ -1103,7 +1104,8 @@
                         <button onclick="window.saveScrollPosition(); window.state.calendarViewDate.setMonth(window.state.calendarViewDate.getMonth()+1); window.render();" class="p-2 hover:bg-slate-100 rounded-lg text-indigo-600"><i data-lucide="chevron-right" size="20"></i></button>
                     </div>
                     <div class="calendar-grid">
-                        ${DAYS_TH.map(d => `<div class="text-center text-[10px] font-black text-slate-400 uppercase py-2">${d.substring(0,2)}</div>`).join('')}
+                        <!-- ปรับแก้: แสดงตัวย่อเต็มๆ โดยไม่ตัด substring -->
+                        ${DAYS_TH.map(d => `<div class="text-center text-[10px] font-black text-slate-400 uppercase py-2">${d}</div>`).join('')}
                         ${daysHtml.join('')}
                     </div>
                     <div class="mt-6 flex flex-wrap justify-center gap-4 pt-4 border-t border-slate-50">
@@ -1470,7 +1472,8 @@
                              <div class="flex items-center justify-between">
                                 <span class="text-[10px] font-bold text-slate-400 uppercase tracking-widest">วันให้บริการ</span>
                                 <div class="flex gap-1">
-                                    ${window.state.settings.availableDays.map(d => `<span class="w-5 h-5 rounded-full bg-indigo-50 text-indigo-600 flex items-center justify-center text-[8px] font-bold">${DAYS_TH[d].charAt(0)}</span>`).join('')}
+                                    <!-- ปรับแก้: แสดงตัวย่อเต็มๆ เปลี่ยนจาก w-5 เป็น h-5 และใช้ px-1.5 เพื่อรองรับ "พฤ." -->
+                                    ${window.state.settings.availableDays.map(d => `<span class="h-5 px-1.5 rounded-full bg-indigo-50 text-indigo-600 flex items-center justify-center text-[8px] font-bold">${DAYS_TH[d]}</span>`).join('')}
                                 </div>
                             </div>
                         </div>
