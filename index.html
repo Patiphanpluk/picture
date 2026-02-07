@@ -257,6 +257,50 @@
             return ranges.join(", ");
         };
 
+        // --- NEW: Check and Clear Expired Sessions ---
+        const checkAutoClear = async () => {
+            if (!window.state.resources || !window.state.bookings) return;
+            const todayStr = getLocalDateString();
+            const now = new Date();
+            const currentHm = now.getHours().toString().padStart(2,'0') + ':' + now.getMinutes().toString().padStart(2,'0');
+
+            // Filter in-use resources
+            const inUseResources = window.state.resources.filter(r => r.status === 'in_use');
+            
+            for (const res of inUseResources) {
+                // Find active bookings for this resource today
+                const activeBookings = window.state.bookings.filter(b => 
+                    b.resourceId === res.id && 
+                    b.studentId === res.currentStudent && 
+                    b.date === todayStr &&
+                    b.status === 'checked_in'
+                );
+
+                if (activeBookings.length > 0) {
+                    // Find max end time across all active bookings
+                    let maxEnd = "00:00";
+                    activeBookings.forEach(b => {
+                        let end = b.slot_end || addMinutes(b.slot, 59);
+                        if (end > maxEnd) maxEnd = end;
+                    });
+
+                    // If current time > max end time, clear status
+                    if (currentHm > maxEnd) {
+                        console.log(`Auto-clearing resource ${res.name} because ${currentHm} > ${maxEnd}`);
+                        await updateDoc(doc(db, 'artifacts', fbId, 'public', 'data', 'resources', res.id), { 
+                            status: 'idle', 
+                            currentStudent: null, 
+                            startedAt: null 
+                        });
+                    }
+                } else {
+                    // Fallback: If resource is 'in_use' but no checked_in bookings exist for today (maybe cleared manually or date changed), reset it.
+                    // To be safe, we check if startedAt is from a previous date? 
+                    // Simple check: If date is not match, we could clear, but let's stick to time check for now.
+                }
+            }
+        };
+
         // --- Firebase Core ---
         async function init() {
             try {
@@ -265,6 +309,9 @@
                     window.state.user = u;
                     if (u) listenToData();
                 });
+                
+                // Start Auto-Clear Interval (Runs every 10 seconds)
+                setInterval(checkAutoClear, 10000);
             } catch (err) { window.uiAlert("Firebase Error: " + err.message, "error"); }
         }
 
@@ -637,6 +684,27 @@
                 // Save again inside the callback just to be safe
                 window.saveScrollPosition();
                 await deleteDoc(doc(db, 'artifacts', fbId, 'public', 'data', 'bookings', id));
+                
+                // NEW: If the deleted booking was actively checked-in, check if we need to reset the resource status
+                if (b.status === 'checked_in') {
+                    // Check if there are any OTHER checked-in bookings for this resource and student today
+                    const otherActive = window.state.bookings.filter(ob => 
+                        ob.id !== id && 
+                        ob.resourceId === b.resourceId && 
+                        ob.studentId === b.studentId && 
+                        ob.date === b.date &&
+                        ob.status === 'checked_in'
+                    );
+                    
+                    if (otherActive.length === 0) {
+                        // No other active bookings, reset the resource
+                        await updateDoc(doc(db, 'artifacts', fbId, 'public', 'data', 'resources', b.resourceId), { 
+                            status: 'idle', 
+                            currentStudent: null, 
+                            startedAt: null 
+                        });
+                    }
+                }
             });
         };
 
@@ -676,12 +744,40 @@
                 for(const b of toDelete) {
                     await deleteDoc(doc(db, 'artifacts', fbId, 'public', 'data', 'bookings', b.id));
                 }
+                
+                // NEW: Reset Resources if today is cleared
+                const todayStr = getLocalDateString();
+                if (d === todayStr) {
+                     const inUseResources = window.state.resources.filter(r => r.status === 'in_use');
+                     for (const r of inUseResources) {
+                         // Double check if any bookings remain (safety)
+                         // Since we just deleted by day, if they were active today, they are likely gone.
+                         // But to be safe, assume if we cleared today's data, we reset today's active status.
+                         await updateDoc(doc(db, 'artifacts', fbId, 'public', 'data', 'resources', r.id), { 
+                            status: 'idle', 
+                            currentStudent: null, 
+                            startedAt: null 
+                        });
+                     }
+                }
+                
                 window.uiAlert(`ลบข้อมูล ${toDelete.length} รายการเรียบร้อย`);
             });
         };
 
         const clearAllHistory = () => window.uiConfirm("ล้างฐานข้อมูล", "ต้องการลบทั้งหมดหรือไม่?", async () => {
             for(const b of window.state.bookings) await deleteDoc(doc(db, 'artifacts', fbId, 'public', 'data', 'bookings', b.id));
+            
+            // NEW: Reset ALL resources status to idle
+            for(const r of window.state.resources) {
+                if (r.status !== 'idle') {
+                    await updateDoc(doc(db, 'artifacts', fbId, 'public', 'data', 'resources', r.id), { 
+                        status: 'idle', 
+                        currentStudent: null, 
+                        startedAt: null 
+                    });
+                }
+            }
         });
 
         const openHistoryModal = () => { window.state.showHistoryModal = true; render(); };
@@ -796,10 +892,13 @@
 
         // --- NEW HELPER: Render Active User Card ---
         function renderActiveUserCard(resourceId) {
+            // NEW: strict check for today
+            const todayStr = getLocalDateString();
+            if (window.state.selectedDate !== todayStr) return '';
+
             const res = window.state.resources.find(r => r.id === resourceId);
             if (!res || res.status !== 'in_use' || !res.currentStudent) return '';
 
-            const todayStr = getLocalDateString();
             const activeBookings = window.state.bookings.filter(b => 
                 b.resourceId === res.id && 
                 b.studentId === res.currentStudent && 
@@ -812,23 +911,20 @@
             const timeRange = window.formatBookingRanges(activeBookings);
             
             return `
-                <div class="mb-6 p-5 bg-indigo-600 rounded-[2rem] text-white shadow-xl relative overflow-hidden animate-in fade-in slide-in-from-top-4 duration-500">
-                    <div class="absolute -right-10 -top-10 w-40 h-40 bg-white/10 rounded-full blur-3xl pointer-events-none"></div>
-                    <div class="relative z-10 flex items-center gap-4">
-                        <div class="w-12 h-12 bg-white/20 rounded-xl flex items-center justify-center shadow-inner relative shrink-0">
-                            <div class="absolute inset-0 bg-white/10 rounded-xl animate-ping opacity-20"></div>
-                            <i data-lucide="user-check" size="24"></i>
+                <div class="w-full p-4 bg-indigo-50/80 backdrop-blur-sm border-2 border-indigo-200 rounded-[1.5rem] text-indigo-800 shadow-sm mb-4 animate-in fade-in slide-in-from-top-2">
+                    <div class="flex items-center gap-3">
+                        <div class="w-10 h-10 bg-white rounded-xl flex items-center justify-center text-indigo-600 shadow-sm border border-indigo-100">
+                            <i data-lucide="user-check" size="20"></i>
                         </div>
-                        <div class="min-w-0">
-                            <div class="flex items-center gap-2 mb-1">
-                                <div class="w-1.5 h-1.5 bg-green-400 rounded-full animate-pulse"></div>
-                                <p class="text-[9px] font-bold uppercase tracking-widest opacity-80">กำลังใช้งาน (In Use)</p>
+                        <div>
+                            <div class="flex items-center gap-2">
+                                <h3 class="font-black text-sm uppercase tracking-tight">${res.currentStudent}</h3>
+                                <span class="px-1.5 py-0.5 bg-green-500 text-white text-[8px] font-bold rounded uppercase">กำลังใช้งาน</span>
                             </div>
-                            <h3 class="text-xl font-black leading-none tracking-tight truncate">${res.currentStudent}</h3>
-                            <div class="mt-1 inline-flex items-center gap-1.5">
-                                <i data-lucide="clock" size="12" class="text-indigo-200"></i>
-                                <span class="text-[10px] font-bold text-white tracking-wide opacity-90">${timeRange} น.</span>
-                            </div>
+                            <p class="text-[10px] font-bold text-indigo-400 mt-0.5">
+                                <i data-lucide="calendar" size="10" class="inline mb-0.5"></i> ${formatDateTH(activeBookings[0].date)} | 
+                                <i data-lucide="clock" size="10" class="inline mb-0.5"></i> ${timeRange} น.
+                            </p>
                         </div>
                     </div>
                 </div>
@@ -1442,6 +1538,18 @@
             const todayStr = getLocalDateString();
             const isToday = bookingDate === todayStr;
 
+            // NEW: Time check logic for button restriction
+            let maxEnd = "00:00";
+            if (window.state.activeBookings.length > 0) {
+                window.state.activeBookings.forEach(b => {
+                    let end = b.slot_end || addMinutes(b.slot, 59);
+                    if (end > maxEnd) maxEnd = end;
+                });
+            }
+            const now = new Date();
+            const currentHm = now.getHours().toString().padStart(2,'0') + ':' + now.getMinutes().toString().padStart(2,'0');
+            const isTimeOver = currentHm > maxEnd;
+
             return `
                 <div class="max-w-xs mx-auto animate-in zoom-in duration-300 page-transition">
                     <div class="bg-white rounded-[2.5rem] overflow-hidden shadow-2xl border border-slate-100 relative">
@@ -1457,9 +1565,13 @@
                                 <p class="text-[10px] text-slate-400 font-bold mt-2 border-t border-slate-200 pt-2">วันที่: ${formatDateTH(bookingDate)}</p>
                             </div>
                             <div class="pt-4 flex flex-col gap-3">
-                                ${isToday ? `
-                                    <button onclick="window.requestCameraPermission()" class="w-full py-4 bg-slate-900 text-white font-bold rounded-2xl shadow-xl active:scale-95 transition-all flex items-center justify-center gap-3"><i data-lucide="qr-code" size="20"></i> สแกนเช็คอิน</button>
-                                ` : `
+                                ${isToday ? (
+                                    !isTimeOver ? `
+                                        <button onclick="window.requestCameraPermission()" class="w-full py-4 bg-slate-900 text-white font-bold rounded-2xl shadow-xl active:scale-95 transition-all flex items-center justify-center gap-3"><i data-lucide="qr-code" size="20"></i> สแกนเช็คอิน</button>
+                                    ` : `
+                                        <button disabled class="w-full py-4 bg-slate-100 text-red-400 font-bold rounded-2xl cursor-not-allowed flex items-center justify-center gap-3 opacity-80"><i data-lucide="clock" size="20"></i> หมดเวลาเข้าใช้งาน</button>
+                                    `
+                                ) : `
                                     <button disabled class="w-full py-4 bg-slate-100 text-slate-400 font-bold rounded-2xl cursor-not-allowed flex items-center justify-center gap-3 opacity-80"><i data-lucide="calendar-off" size="20"></i> เช็คอินได้เฉพาะวันที่จอง</button>
                                 `}
                                 <button onclick="window.setView('selection'); window.state.selectedResource=null; window.render();" class="text-[10px] font-bold text-slate-400 uppercase tracking-widest py-2">กลับหน้าหลัก</button>
