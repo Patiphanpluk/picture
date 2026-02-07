@@ -158,7 +158,9 @@
                 endTime: "18:00", 
                 availableDays: [1, 2, 3, 4, 5], 
                 startDate: getLocalDateString(), 
-                endDate: "" 
+                endDate: "",
+                systemStatus: true, // Default open
+                closedDates: {} // Format: { "YYYY-MM-DD": "Reason" }
             },
             allowedStudents: [], 
             resources: [],
@@ -267,7 +269,7 @@
 
         function listenToData() {
             onSnapshot(doc(db, 'artifacts', fbId, 'public', 'data', 'settings', 'global_config'), (s) => {
-                if (s.exists()) window.state.settings = s.data();
+                if (s.exists()) window.state.settings = { ...window.state.settings, ...s.data() };
                 window.saveScrollPosition(); // Try to save scroll on data update
                 render();
             });
@@ -352,39 +354,51 @@
             render(); 
         };
 
-        // NEW: Function to jump to a specific date from the dashboard
+        // Updated: GoToDate with Confirmation
         const goToDate = (dateStr) => {
-             // Find a booking on this date for the current user to guess which resource they want to see
-             const booking = window.state.bookings.find(b => b.date === dateStr && b.studentId === window.state.studentId);
-             
-             if (booking) {
-                 // Open that resource
-                 window.state.selectedResource = { id: booking.resourceId, name: booking.resourceName };
-                 window.state.selectedDate = dateStr;
-                 window.state.view = 'calendar';
-                 window.state.lastScrollTop = 0;
-                 window.render();
-                 
-                 // Auto scroll to quota container after render
-                 setTimeout(() => {
-                     window.scrollToTarget();
-                 }, 300);
-             } else {
-                 // If no booking found, default to first resource
-                 if (window.state.resources.length > 0) {
-                     const r = window.state.resources[0];
-                     window.state.selectedResource = { id: r.id, name: r.name };
-                     window.state.selectedDate = dateStr;
-                     window.state.view = 'calendar';
-                     window.render();
-                     setTimeout(() => window.scrollToTarget(), 300);
+             window.uiConfirm(
+                 `ไปที่วันที่ ${formatDateTH(dateStr)}`,
+                 `คุณต้องการดูรายละเอียดการจองของวันที่ ${formatDateTH(dateStr)} หรือไม่?`,
+                 () => {
+                     // Find a booking on this date for the current user to guess which resource they want to see
+                     const booking = window.state.bookings.find(b => b.date === dateStr && b.studentId === window.state.studentId);
+                     
+                     if (booking) {
+                         // Open that resource
+                         window.state.selectedResource = { id: booking.resourceId, name: booking.resourceName };
+                         window.state.selectedDate = dateStr;
+                         window.state.view = 'calendar';
+                         window.state.lastScrollTop = 0;
+                         window.render();
+                         
+                         // Auto scroll to quota container after render
+                         setTimeout(() => {
+                             window.scrollToTarget();
+                         }, 300);
+                     } else {
+                         // If no booking found, default to first resource
+                         if (window.state.resources.length > 0) {
+                             const r = window.state.resources[0];
+                             window.state.selectedResource = { id: r.id, name: r.name };
+                             window.state.selectedDate = dateStr;
+                             window.state.view = 'calendar';
+                             window.render();
+                             setTimeout(() => window.scrollToTarget(), 300);
+                         }
+                     }
                  }
-             }
+             );
         };
 
         const toggleSlotSelection = (slotObj) => {
             window.saveScrollPosition(); // Save scroll before toggling
             
+            // Check closed dates
+            if (window.state.settings.closedDates && window.state.settings.closedDates[window.state.selectedDate]) {
+                const reason = window.state.settings.closedDates[window.state.selectedDate];
+                return window.uiAlert(`ไม่สามารถจองได้: วันนี้ปิดให้บริการ (${reason})`, "error");
+            }
+
             // Fixed: Use getLocalDateString for accurate "Today" comparison
             const todayStr = getLocalDateString();
             if (window.state.selectedDate < todayStr) {
@@ -498,7 +512,12 @@
 
             const f = new FormData(e.target);
             const days = DAYS_TH.map((_, i) => f.get(`day-${i}`) ? i : null).filter(x => x !== null);
+            
+            // Preserve existing closed dates
+            const currentSettings = window.state.settings;
+            
             await setDoc(doc(db, 'artifacts', fbId, 'public', 'data', 'settings', 'global_config'), {
+                ...currentSettings,
                 projectName: f.get('projectName'),
                 maxHoursPerDay: parseInt(f.get('maxHoursDay')),
                 maxTotalHours: parseInt(f.get('maxHoursTotal')),
@@ -509,6 +528,35 @@
                 availableDays: days
             });
             window.uiAlert("บันทึกเรียบร้อยแล้ว");
+        };
+
+        const toggleSystemStatus = async () => {
+            const newStatus = !window.state.settings.systemStatus;
+            await updateDoc(doc(db, 'artifacts', fbId, 'public', 'data', 'settings', 'global_config'), {
+                systemStatus: newStatus
+            });
+            window.uiAlert(`ระบบ ${newStatus ? 'เปิด' : 'ปิด'} เรียบร้อยแล้ว`);
+        };
+
+        const addClosedDate = async (e) => {
+            e.preventDefault();
+            const date = e.target.date.value;
+            const reason = e.target.reason.value;
+            if (!date || !reason) return;
+
+            const newClosedDates = { ...window.state.settings.closedDates, [date]: reason };
+            await updateDoc(doc(db, 'artifacts', fbId, 'public', 'data', 'settings', 'global_config'), {
+                closedDates: newClosedDates
+            });
+            e.target.reset();
+        };
+
+        const removeClosedDate = async (date) => {
+            const newClosedDates = { ...window.state.settings.closedDates };
+            delete newClosedDates[date];
+            await updateDoc(doc(db, 'artifacts', fbId, 'public', 'data', 'settings', 'global_config'), {
+                closedDates: newClosedDates
+            });
         };
 
         const saveWhitelist = async (e) => {
@@ -665,6 +713,14 @@
         };
 
         const isServiceAvailable = (dateStr) => {
+            // Check Global System Status
+            if (window.state.settings.systemStatus === false) return false;
+
+            // Check Closed Dates
+            if (window.state.settings.closedDates && window.state.settings.closedDates[dateStr]) {
+                return true; // Return true to allow rendering, but we will style it as closed
+            }
+
             const d = new Date(dateStr);
             const isInRange = (!window.state.settings.startDate || dateStr >= window.state.settings.startDate) &&
                               (!window.state.settings.endDate || dateStr <= window.state.settings.endDate);
@@ -849,6 +905,10 @@
                 const dateStr = `${year}-${(month+1).toString().padStart(2,'0')}-${d.toString().padStart(2,'0')}`;
                 const isPast = dateStr < todayStr;
                 const available = isServiceAvailable(dateStr);
+                
+                // Check if this date is in closedDates
+                const isClosed = window.state.settings.closedDates && window.state.settings.closedDates[dateStr];
+                
                 const bookingsOnDay = window.state.bookings.filter(b => b.date === dateStr && b.resourceId === targetResId);
                 const count = bookingsOnDay.length;
                 const isFull = count >= maxSlots;
@@ -856,7 +916,8 @@
 
                 let borderClass = 'border-slate-50';
                 if (available) {
-                    if (isFull) borderClass = 'border-red-500 bg-red-50';
+                    if (isClosed) borderClass = 'border-orange-200 bg-orange-50 text-orange-400';
+                    else if (isFull) borderClass = 'border-red-500 bg-red-50';
                     else if (count > 0) borderClass = 'border-green-500 bg-green-50';
                 }
 
@@ -866,9 +927,10 @@
                             class="aspect-square flex flex-col items-center justify-center rounded-xl transition-all border-2 ${isSelected && isInternal ? 'ring-4 ring-indigo-200 z-10' : ''} 
                             ${available ? `bg-white ${borderClass} hover:border-indigo-400 active:scale-90 shadow-sm` : 'bg-slate-50 border-transparent text-slate-300 cursor-not-allowed'}
                             ${isPast ? 'opacity-40 grayscale-[0.5]' : ''}">
-                        <span class="text-sm font-bold ${available ? 'text-slate-800' : ''}">${d}</span>
-                        ${available && count > 0 && !isFull ? `<div class="mt-1 w-1 h-1 bg-green-500 rounded-full"></div>` : ''}
-                        ${available && isFull ? `<div class="mt-1 w-1 h-1 bg-red-500 rounded-full"></div>` : ''}
+                        <span class="text-sm font-bold ${available && !isClosed ? 'text-slate-800' : isClosed ? 'text-orange-500' : ''}">${d}</span>
+                        ${available && !isClosed && count > 0 && !isFull ? `<div class="mt-1 w-1 h-1 bg-green-500 rounded-full"></div>` : ''}
+                        ${available && !isClosed && isFull ? `<div class="mt-1 w-1 h-1 bg-red-500 rounded-full"></div>` : ''}
+                        ${isClosed ? `<div class="mt-1 w-1 h-1 bg-orange-500 rounded-full"></div>` : ''}
                     </button>
                 `);
             }
@@ -891,6 +953,7 @@
                         <div class="flex items-center gap-2 text-[8px] font-bold text-slate-400 uppercase tracking-wider"><div class="w-3 h-3 bg-white border border-slate-200 rounded"></div> ว่าง</div>
                         <div class="flex items-center gap-2 text-[8px] font-bold text-slate-400 uppercase tracking-wider"><div class="w-3 h-3 bg-green-50 border border-green-500 rounded"></div> มีคนจองแล้ว</div>
                         <div class="flex items-center gap-2 text-[8px] font-bold text-slate-400 uppercase tracking-wider"><div class="w-3 h-3 bg-red-50 border border-red-500 rounded"></div> เต็มแล้ว</div>
+                        <div class="flex items-center gap-2 text-[8px] font-bold text-slate-400 uppercase tracking-wider"><div class="w-3 h-3 bg-orange-50 border border-orange-500 rounded"></div> ปิด</div>
                     </div>
                 </div>
             `;
@@ -999,6 +1062,7 @@
             const hEnd = window.state.settings.endTime;
             const todayStr = getLocalDateString(); // Fixed Date
             const isPastDate = window.state.selectedDate < todayStr;
+            const isClosedDate = window.state.settings.closedDates && window.state.settings.closedDates[window.state.selectedDate];
 
             const slots = [];
             let current = new Date(`2000-01-01T${hStart}`);
@@ -1054,7 +1118,13 @@
                             <p class="text-[10px] font-black text-slate-400 uppercase tracking-widest">สถานะวันที่ ${formatDateTH(window.state.selectedDate)}</p>
                         </div>
 
-                        ${!isServiceAvailable(window.state.selectedDate) ? `<div class="p-12 bg-orange-50 rounded-[2.5rem] text-center border-2 border-dashed border-orange-200 font-bold text-orange-700 text-sm uppercase">ไม่เปิดให้บริการในวันนี้</div>` : `
+                        ${isClosedDate ? `
+                            <div class="p-8 bg-orange-50 rounded-[2.5rem] text-center border-2 border-dashed border-orange-200 space-y-2">
+                                <div class="w-12 h-12 bg-orange-100 text-orange-500 rounded-full flex items-center justify-center mx-auto mb-2"><i data-lucide="alert-circle" size="24"></i></div>
+                                <p class="font-black text-orange-600 text-lg uppercase leading-none">วันนี้ปิดให้บริการ</p>
+                                <p class="text-[10px] font-bold text-orange-400 uppercase tracking-widest">Reason: ${window.state.settings.closedDates[window.state.selectedDate]}</p>
+                            </div>
+                        ` : !isServiceAvailable(window.state.selectedDate) ? `<div class="p-12 bg-orange-50 rounded-[2.5rem] text-center border-2 border-dashed border-orange-200 font-bold text-orange-700 text-sm uppercase">ไม่เปิดให้บริการในวันนี้</div>` : `
                             <div id="slots-container" class="grid grid-cols-1 gap-2.5">
                                 ${slots.map(s => {
                                     const bOthers = window.state.bookings.find(b => b.date === window.state.selectedDate && b.slot === s.start && b.resourceId === window.state.selectedResource.id && b.studentId !== window.state.studentId);
@@ -1148,7 +1218,7 @@
 
             return `
                 <div class="space-y-6 page-transition text-left pb-12">
-                    <div class="bg-indigo-600 p-4 rounded-[2rem] text-white shadow-xl relative overflow-hidden">
+                    <div class="bg-indigo-600 p-4 rounded-[2rem] text-white shadow-xl relative overflow-hidden h-auto transition-all">
                          <div class="absolute -right-10 -top-10 w-40 h-40 bg-white/10 rounded-full blur-3xl pointer-events-none"></div>
                          
                          <!-- Header Row: Label & Status -->
@@ -1165,9 +1235,10 @@
 
                          <!-- Quota Stats Row -->
                          <!-- Clean UI: removed border artifacts and backdrop blur -->
-                         <div class="grid grid-cols-2 gap-3">
+                         <!-- Updated: Removed fixed h-20/h-28 to allow auto growth based on content -->
+                         <div class="grid grid-cols-2 gap-3 items-stretch">
                              <!-- Total Quota (Thai) -->
-                             <div class="bg-indigo-900/40 p-3 rounded-2xl flex flex-col justify-center h-20">
+                             <div class="bg-indigo-900/40 p-3 rounded-2xl flex flex-col justify-center min-h-[5rem]">
                                  <p class="text-[9px] font-bold text-indigo-300 uppercase tracking-widest mb-1">โควตาทั้งหมด</p>
                                   <div class="flex items-baseline gap-1">
                                      <span class="text-2xl font-black leading-none">${bookedTotal}</span>
@@ -1176,9 +1247,9 @@
                              </div>
 
                              <!-- Booked Dates Summary (New) -->
-                             <div class="bg-indigo-900/40 p-3 rounded-2xl flex flex-col justify-start h-20 overflow-hidden relative">
+                             <div class="bg-indigo-900/40 p-3 rounded-2xl flex flex-col justify-start min-h-[5rem] relative">
                                  <p class="text-[9px] font-bold text-indigo-300 uppercase tracking-widest mb-1 sticky top-0 z-10">รายการจอง (${sortedSummaryDates.length} วัน)</p>
-                                 <div class="overflow-y-auto custom-scrollbar pr-1 space-y-1 h-full relative z-0">
+                                 <div class="space-y-1 relative z-0">
                                     ${sortedSummaryDates.length === 0 ? 
                                         '<div class="text-[10px] opacity-40 mt-1">- ว่าง -</div>' : 
                                         sortedSummaryDates.map(d => `
@@ -1335,9 +1406,51 @@
 
         function renderAdminUI() {
             const activeDates = [...new Set(window.state.bookings.map(b => b.date))].sort();
+            const closedDates = window.state.settings.closedDates || {};
             
             return `
                 <div class="space-y-8 page-transition pb-32 text-left">
+                    <!-- SYSTEM STATUS TOGGLE -->
+                    <section class="bg-indigo-600 p-8 rounded-[2.5rem] shadow-xl space-y-6 text-white relative overflow-hidden">
+                        <div class="absolute -right-10 -top-10 w-40 h-40 bg-white/10 rounded-full blur-3xl pointer-events-none"></div>
+                        <div class="flex justify-between items-center relative z-10">
+                            <div>
+                                <h2 class="text-xl font-black flex items-center gap-3"><i data-lucide="power" class="text-white/70"></i> System Status</h2>
+                                <p class="text-[10px] font-bold uppercase tracking-widest opacity-60 mt-1">
+                                    สถานะระบบ: ${window.state.settings.systemStatus ? 'เปิดให้บริการ' : 'ปิดปรับปรุงชั่วคราว'}
+                                </p>
+                            </div>
+                            <button onclick="window.toggleSystemStatus()" class="w-16 h-8 rounded-full transition-all flex items-center px-1 ${window.state.settings.systemStatus ? 'bg-green-400 justify-end' : 'bg-slate-800 justify-start'}">
+                                <div class="w-6 h-6 bg-white rounded-full shadow-md"></div>
+                            </button>
+                        </div>
+                    </section>
+
+                    <!-- SPECIAL DATES MANAGEMENT -->
+                    <section class="bg-white p-8 rounded-[2.5rem] border border-slate-100 shadow-xl space-y-6 text-left">
+                        <h2 class="text-xl font-black text-slate-800 flex items-center gap-3 text-left leading-none"><i data-lucide="calendar-off" class="text-indigo-600"></i> Special Holidays</h2>
+                        <form onsubmit="window.addClosedDate(event)" class="space-y-3">
+                            <div class="grid grid-cols-2 gap-3">
+                                <input name="date" type="date" class="p-3 rounded-xl bg-slate-50 border border-slate-200 text-sm font-bold" required>
+                                <input name="reason" type="text" placeholder="ระบุสาเหตุการปิด..." class="p-3 rounded-xl bg-slate-50 border border-slate-200 text-sm font-bold" required>
+                            </div>
+                            <button type="submit" class="w-full py-3 bg-orange-500 text-white font-bold rounded-xl shadow-lg active:scale-95 transition-all text-xs uppercase">เพิ่มวันหยุดพิเศษ</button>
+                        </form>
+                        <div class="space-y-2">
+                            ${Object.keys(closedDates).length === 0 ? '<p class="text-center text-slate-300 text-xs py-4">ไม่มีวันหยุดพิเศษ</p>' : 
+                                Object.entries(closedDates).sort().map(([date, reason]) => `
+                                    <div class="flex justify-between items-center p-3 bg-orange-50 rounded-xl border border-orange-100">
+                                        <div>
+                                            <p class="text-xs font-black text-slate-700">${formatDateTH(date)}</p>
+                                            <p class="text-[9px] font-bold text-orange-500 uppercase tracking-wide">${reason}</p>
+                                        </div>
+                                        <button onclick="window.removeClosedDate('${date}')" class="p-2 text-red-400 hover:bg-red-50 rounded-lg transition-all"><i data-lucide="trash-2" size="14"></i></button>
+                                    </div>
+                                `).join('')
+                            }
+                        </div>
+                    </section>
+
                     <section class="bg-slate-900 p-8 rounded-[2.5rem] shadow-xl space-y-6">
                         <div class="flex justify-between items-center">
                             <h2 class="text-xl font-black text-white flex items-center gap-3"><i data-lucide="users-round" class="text-indigo-400"></i> Student Whitelist</h2>
@@ -1529,24 +1642,21 @@
         window.openQRModal = openQRModal;
         window.closeQRModal = closeQRModal;
         window.closeModal = closeModal;
-        // REMOVED viewPass as it was causing ReferenceError
         window.requestCameraPermission = requestCameraPermission;
         window.render = render;
-        
-        // New Exports
         window.toggleHistoryItem = toggleHistoryItem;
         window.clearMyHistory = clearMyHistory;
-        // New Resource Management Exports
         window.editResource = editResource;
         window.moveResource = moveResource;
-        // New Safer View Pass Function
         window.viewPassToday = viewPassToday;
-        // New Scroll To Target
         window.scrollToTarget = scrollToTarget;
-        // New Date Helper
         window.formatDateShortTH = formatDateShortTH;
-        // NEW: Export goToDate
         window.goToDate = goToDate;
+        
+        // NEW EXPORTS FOR ADMIN FEATURES
+        window.toggleSystemStatus = toggleSystemStatus;
+        window.addClosedDate = addClosedDate;
+        window.removeClosedDate = removeClosedDate;
     </script>
 </body>
 </html>
