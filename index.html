@@ -1316,8 +1316,8 @@
                                             act = "window.uiAlert('ไม่สามารถยกเลิกรายการที่เช็คอินแล้วได้', 'error')"; 
                                             icon = '<i data-lucide="user-check" size="16"></i>';
                                         } else if (!window.state.isAdmin && window.state.selectedDate === todayStr) {
-                                            // NEW: Same-day cancellation restriction
-                                            btnClass = "bg-slate-50 border-slate-200 text-slate-400 cursor-not-allowed"; 
+                                            // NEW: Same-day cancellation restriction - Green style but locked
+                                            btnClass = "bg-green-50 border-green-500 text-green-700 shadow-sm cursor-not-allowed"; 
                                             sText = "จองแล้ว (ยกเลิกไม่ได้)"; 
                                             act = "window.uiAlert('ไม่สามารถยกเลิกการจองในวันใช้งานได้ (ต้องล่วงหน้า 1 วัน)', 'error')"; 
                                             icon = '<i data-lucide="lock" size="16"></i>';
