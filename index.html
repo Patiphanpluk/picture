@@ -22,6 +22,7 @@
                     animation: {
                         'float-hint': 'floatHint 2s ease-in-out infinite',
                         'fade-in-up': 'fadeInUp 0.5s ease-out forwards',
+                        'bounce-slow': 'bounce 2s infinite',
                     },
                     keyframes: {
                         floatHint: {
@@ -66,6 +67,7 @@
             -webkit-overflow-scrolling: touch;
             padding-bottom: calc(160px + env(safe-area-inset-bottom)); /* Add safe area spacing */
             position: relative;
+            scroll-behavior: smooth; /* Smooth scrolling for the button action */
         }
 
         /* Safe Area Padding Utilities */
@@ -89,6 +91,7 @@
         .custom-scrollbar::-webkit-scrollbar { width: 4px; }
         .custom-scrollbar::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }
 
+        /* Disable page transition animation to reduce visual jumping when state updates frequently */
         .page-transition { animation: fadeIn 0.2s ease-out; }
         @keyframes fadeIn {
             from { opacity: 0; transform: translateY(4px); }
@@ -207,6 +210,15 @@
             return count;
         }
 
+        // --- Helper: Save Scroll Position ---
+        window.saveScrollPosition = () => {
+            const container = document.querySelector('.scrollable-content');
+            if (container) {
+                window.state.lastScrollTop = container.scrollTop;
+                window.state.shouldRestoreScroll = true;
+            }
+        };
+
         window.formatBookingRanges = (bookingList) => {
             if (!bookingList || bookingList.length === 0) return "ไม่มีข้อมูลเวลา";
             const sorted = [...bookingList].sort((a, b) => a.slot.localeCompare(b.slot));
@@ -242,10 +254,12 @@
         function listenToData() {
             onSnapshot(doc(db, 'artifacts', fbId, 'public', 'data', 'settings', 'global_config'), (s) => {
                 if (s.exists()) window.state.settings = s.data();
+                window.saveScrollPosition(); // Try to save scroll on data update
                 render();
             });
             onSnapshot(doc(db, 'artifacts', fbId, 'public', 'data', 'settings', 'allowed_students'), (s) => {
                 if (s.exists()) window.state.allowedStudents = s.data().list || [];
+                window.saveScrollPosition();
                 render();
             });
             onSnapshot(collection(db, 'artifacts', fbId, 'public', 'data', 'resources'), (s) => {
@@ -256,10 +270,12 @@
                 if (window.state.resources.length > 0 && !window.state.publicSelectedResourceId) {
                     window.state.publicSelectedResourceId = window.state.resources[0].id;
                 }
+                window.saveScrollPosition();
                 render();
             });
             onSnapshot(collection(db, 'artifacts', fbId, 'public', 'data', 'bookings'), (s) => {
                 window.state.bookings = s.docs.map(d => ({ id: d.id, ...d.data() }));
+                window.saveScrollPosition();
                 render();
             });
         }
@@ -267,8 +283,10 @@
         // --- Functions ---
         const setView = (v) => { 
             window.state.view = v;
-            window.state.lastScrollTop = 0;
-            window.state.shouldRestoreScroll = false;
+            // When changing major views, we usually want to reset scroll, unless explicitly saved before
+            if (!window.state.shouldRestoreScroll) {
+                window.state.lastScrollTop = 0;
+            }
             
             if (v !== 'scanner' && window.html5QrScanner) {
                 if (window.html5QrScanner.stop) { window.html5QrScanner.stop().catch(() => {}); }
@@ -315,16 +333,13 @@
             window.state.selectedResource = { id, name }; 
             window.state.selectedSlots = [];
             window.state.view = 'calendar'; 
-            window.state.lastScrollTop = 0;
+            window.state.lastScrollTop = 0; // Reset scroll when entering new resource
+            window.state.shouldRestoreScroll = false;
             render(); 
         };
 
         const toggleSlotSelection = (slotObj) => {
-            const container = document.querySelector('.scrollable-content');
-            if (container) {
-                window.state.lastScrollTop = container.scrollTop;
-                window.state.shouldRestoreScroll = true;
-            }
+            window.saveScrollPosition(); // Save scroll before toggling
 
             const todayStr = new Date().toLocaleDateString('en-CA');
             if (window.state.selectedDate < todayStr) {
@@ -354,7 +369,7 @@
                 return window.uiAlert("วันเวลาที่ผ่านมาแล้ว ไม่สามารถจองย้อนหลังได้", "error");
             }
             
-            // Set loading state to prevent double clicks and show UI feedback
+            window.saveScrollPosition();
             window.state.isLoading = true;
             render();
 
@@ -377,7 +392,8 @@
                 window.state.selectedSlots = [];
                 window.state.activeBookings = confirmedItems;
                 window.state.view = 'pass'; 
-                window.state.lastScrollTop = 0; 
+                window.state.lastScrollTop = 0; // Reset scroll for pass view
+                window.state.shouldRestoreScroll = false;
             } catch (err) { 
                 window.uiAlert("Booking failed: " + err.message, "error"); 
             } finally {
@@ -386,9 +402,7 @@
             }
         };
 
-        // --- SAFE View Pass Function ---
         const viewPassToday = () => {
-            // Re-calculate the list from state instead of passing it via HTML
             const myToday = window.state.bookings.filter(b => 
                 b.studentId === window.state.studentId && 
                 b.date === window.state.selectedDate && 
@@ -435,11 +449,7 @@
 
         const saveSettings = async (e) => {
             e.preventDefault();
-            const container = document.querySelector('.scrollable-content');
-            if (container) {
-                window.state.lastScrollTop = container.scrollTop;
-                window.state.shouldRestoreScroll = true;
-            }
+            window.saveScrollPosition();
 
             const f = new FormData(e.target);
             const days = DAYS_TH.map((_, i) => f.get(`day-${i}`) ? i : null).filter(x => x !== null);
@@ -458,11 +468,7 @@
 
         const saveWhitelist = async (e) => {
             e.preventDefault();
-            const container = document.querySelector('.scrollable-content');
-            if (container) {
-                window.state.lastScrollTop = container.scrollTop;
-                window.state.shouldRestoreScroll = true;
-            }
+            window.saveScrollPosition();
 
             const raw = e.target.studentsList.value;
             const list = raw.split(/[\n\t\r\s,]+/).map(s => s.trim()).filter(s => s.length >= 5);
@@ -472,24 +478,20 @@
 
         const addRes = async (e) => {
             e.preventDefault();
-            const container = document.querySelector('.scrollable-content');
-            if (container) {
-                window.state.lastScrollTop = container.scrollTop;
-                window.state.shouldRestoreScroll = true;
-            }
+            window.saveScrollPosition();
 
             const name = e.target.resName.value.trim();
             if (name) await addDoc(collection(db, 'artifacts', fbId, 'public', 'data', 'resources'), { name, status: 'idle', order: Date.now() });
             e.target.reset();
         };
 
-        const deleteResource = (id) => window.uiConfirm("ลบทรัพยากร", "ต้องการลบใช่หรือไม่?", async () => await deleteDoc(doc(db, 'artifacts', fbId, 'public', 'data', 'resources', id)));
+        const deleteResource = (id) => window.uiConfirm("ลบทรัพยากร", "ต้องการลบใช่หรือไม่?", async () => {
+            window.saveScrollPosition();
+            await deleteDoc(doc(db, 'artifacts', fbId, 'public', 'data', 'resources', id));
+        });
         
         const editResource = (id, currentName) => {
-            const container = document.querySelector('.scrollable-content');
-            if (container) window.state.lastScrollTop = container.scrollTop;
-            window.state.shouldRestoreScroll = true;
-
+            window.saveScrollPosition();
             const newName = prompt("แก้ไขชื่อจุดใช้งาน:", currentName);
             if (newName && newName.trim() !== "") {
                 updateDoc(doc(db, 'artifacts', fbId, 'public', 'data', 'resources', id), { name: newName.trim() });
@@ -497,9 +499,7 @@
         };
 
         const moveResource = async (id, direction) => {
-            const container = document.querySelector('.scrollable-content');
-            if (container) window.state.lastScrollTop = container.scrollTop;
-            window.state.shouldRestoreScroll = true;
+            window.saveScrollPosition();
 
             const items = [...window.state.resources].sort((a, b) => (a.order || 0) - (b.order || 0));
             const index = items.findIndex(i => i.id === id);
@@ -534,29 +534,23 @@
             const b = window.state.bookings.find(x => x.id === id);
             if (!b) return;
 
+            // Save scroll position BEFORE showing confirm dialog
+            window.saveScrollPosition();
+
             const todayStr = new Date().toLocaleDateString('en-CA');
             const isPast = b.date < todayStr;
             const title = isPast ? "ลบประวัติ" : "ยกเลิกการจอง";
             const msg = isPast ? "ต้องการลบประวัติรายการนี้ใช่หรือไม่?" : "ต้องการยกเลิกการจองนี้ใช่หรือไม่?";
 
             window.uiConfirm(title, msg, async () => {
-                const container = document.querySelector('.scrollable-content');
-                if (container) {
-                    window.state.lastScrollTop = container.scrollTop;
-                    window.state.shouldRestoreScroll = true;
-                }
-                
+                // Save again inside the callback just to be safe
+                window.saveScrollPosition();
                 await deleteDoc(doc(db, 'artifacts', fbId, 'public', 'data', 'bookings', id));
             });
         };
 
         const toggleHistoryItem = (id) => {
-             const container = document.querySelector('.scrollable-content');
-             if (container) {
-                 window.state.lastScrollTop = container.scrollTop;
-                 window.state.shouldRestoreScroll = true;
-             }
-
+             window.saveScrollPosition();
              if (window.state.expandedHistoryId === id) {
                  window.state.expandedHistoryId = null;
              } else {
@@ -567,11 +561,7 @@
 
         const clearMyHistory = () => {
              window.uiConfirm("ล้างประวัติทั้งหมด", "คุณต้องการลบประวัติการจองทั้งหมดของคุณใช่หรือไม่?", async () => {
-                 const container = document.querySelector('.scrollable-content');
-                 if (container) {
-                     window.state.lastScrollTop = container.scrollTop;
-                     window.state.shouldRestoreScroll = true;
-                 }
+                 window.saveScrollPosition();
                  const myBookings = window.state.bookings.filter(b => b.studentId === window.state.studentId);
                  for (const b of myBookings) {
                      await deleteDoc(doc(db, 'artifacts', fbId, 'public', 'data', 'bookings', b.id));
@@ -590,12 +580,7 @@
 
         const clearByDay = (d) => {
             window.uiConfirm("ลบข้อมูลรายวัน", `ต้องการลบข้อมูลการจองทั้งหมดของวันที่ ${formatDateTH(d)}?`, async () => {
-                const container = document.querySelector('.scrollable-content');
-                if (container) {
-                    window.state.lastScrollTop = container.scrollTop;
-                    window.state.shouldRestoreScroll = true;
-                }
-
+                window.saveScrollPosition();
                 const toDelete = window.state.bookings.filter(x => x.date === d);
                 for(const b of toDelete) {
                     await deleteDoc(doc(db, 'artifacts', fbId, 'public', 'data', 'bookings', b.id));
@@ -609,14 +594,20 @@
         });
 
         window.uiAlert = (message, type = 'info') => {
+            window.saveScrollPosition(); // Critical: Save scroll before showing modal
             window.state.modal = { show: true, title: type === 'error' ? 'ข้อผิดพลาด' : type === 'success' ? 'สำเร็จ' : 'แจ้งเตือน', message, type, onConfirm: null };
             render();
         };
         window.uiConfirm = (title, message, onConfirm) => {
+            window.saveScrollPosition(); // Critical: Save scroll before showing modal
             window.state.modal = { show: true, title, message, type: 'confirm', onConfirm };
             render();
         };
-        const closeModal = () => { window.state.modal.show = false; render(); };
+        const closeModal = () => { 
+            window.saveScrollPosition(); // Critical: Save scroll before closing modal to prevent reset
+            window.state.modal.show = false; 
+            render(); 
+        };
         const openQRModal = (id, name) => { window.state.showQRModal = { id, name }; render(); };
         const closeQRModal = () => { window.state.showQRModal = null; render(); };
         
@@ -635,26 +626,67 @@
             return isInRange && window.state.settings.availableDays.includes(d.getDay());
         };
 
+        // --- Logic: Scroll to Target ---
+        const scrollToTarget = () => {
+            let targetId = null;
+            // Identify target based on view
+            if (window.state.view === 'calendar') targetId = 'slots-container';
+            else if (!window.state.selectedResource && window.state.view !== 'login') targetId = 'resource-list';
+            else if (window.state.view === 'selection') targetId = 'resource-list';
+            
+            const target = targetId ? document.getElementById(targetId) : null;
+            if (target) {
+                target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            }
+        };
+
         const setupScrollHint = () => {
             const container = document.querySelector('.scrollable-content');
             const hint = document.getElementById('scroll-hint');
-            if (container && hint && window.state.view === 'calendar') {
-                if (window.state.hintTimeout) clearTimeout(window.state.hintTimeout);
-                
-                const hideHint = () => {
-                    hint.style.opacity = '0';
-                    if (window.state.hintTimeout) clearTimeout(window.state.hintTimeout);
+            
+            let targetId = null;
+            if (window.state.view === 'calendar') targetId = 'slots-container';
+            // Logic to support selection view or general view without resource selected
+            else if (!window.state.selectedResource && window.state.view !== 'login' && window.state.view !== 'scanner' && window.state.view !== 'pass') {
+                 targetId = 'resource-list';
+            } else if (window.state.view === 'selection') {
+                 targetId = 'resource-list';
+            }
+
+            const target = targetId ? document.getElementById(targetId) : null;
+
+            if (!container || !hint) return;
+
+            // Reset state - Hide initially
+            hint.style.opacity = '0';
+            hint.style.pointerEvents = 'none';
+            if (window.state.hintTimeout) clearTimeout(window.state.hintTimeout);
+
+            if (target) {
+                const checkVisibility = () => {
+                    const rect = target.getBoundingClientRect();
+                    // If top of element is further down than viewport height, it needs scrolling
+                    const isVisible = rect.top < (window.innerHeight - 100); 
+                    return isVisible;
                 };
 
-                if (container.scrollTop < 50) {
-                     window.state.hintTimeout = setTimeout(() => {
-                        if (container.scrollTop < 50) hint.style.opacity = '1';
-                    }, 1500); 
-                }
+                // Add delay 2 seconds
+                window.state.hintTimeout = setTimeout(() => {
+                    if (!checkVisibility()) {
+                        hint.style.opacity = '1';
+                        hint.style.pointerEvents = 'auto'; // Make it clickable
+                        hint.style.transform = 'translate(-50%, 0)';
+                        hint.style.cursor = 'pointer';
+                    }
+                }, 2000); 
 
                 container.onscroll = () => {
-                    hideHint();
-                    window.state.lastScrollTop = container.scrollTop; 
+                    window.state.lastScrollTop = container.scrollTop;
+                    if (checkVisibility()) {
+                        hint.style.opacity = '0';
+                        hint.style.pointerEvents = 'none';
+                        hint.style.transform = 'translate(-50%, 10px)';
+                    }
                 };
             }
         };
@@ -698,14 +730,14 @@
 
             const container = document.querySelector('.scrollable-content');
             if (container) {
-                if (window.state.shouldRestoreScroll && window.state.lastScrollTop > 0) {
-                    container.style.scrollBehavior = 'auto';
+                // Robust Scroll Restore Logic
+                if (window.state.shouldRestoreScroll) {
+                    container.style.scrollBehavior = 'auto'; // Disable smooth scroll for instant restore
                     container.scrollTop = window.state.lastScrollTop;
-                    window.state.shouldRestoreScroll = false;
-                } else {
-                    // Only reset if we are NOT restoring
-                    // container.scrollTop = 0; 
-                    // REMOVED: Dont force scroll to top on every render, let the browser handle it unless view changed
+                    window.state.shouldRestoreScroll = false; // Reset flag
+                } else if (window.state.lastScrollTop === 0) {
+                     // Only reset to top if not restoring and lastScrollTop is explicitly 0 (like new view)
+                     container.scrollTop = 0;
                 }
             }
 
@@ -715,10 +747,19 @@
         }
 
         function renderScrollHint() {
-            if (window.state.view !== 'calendar') return '';
+            // Updated condition to include selection/main view
+            const isCalendar = window.state.view === 'calendar';
+            const isSelection = !window.state.selectedResource && window.state.view !== 'login' && window.state.view !== 'scanner';
+            
+            if (!isCalendar && !isSelection) return '';
+            
+            const text = isCalendar ? 'เลื่อนลงเพื่อดูช่วงเวลา' : 'เลื่อนเพื่อดูจุดใช้งาน';
+
+            // Updated design: Glassmorphism + Clickable (onclick)
             return `
-                <div id="scroll-hint" class="fixed bottom-[calc(6rem+env(safe-area-inset-bottom))] left-1/2 -translate-x-1/2 bg-slate-800/80 text-white text-[10px] px-4 py-2 rounded-full shadow-lg opacity-0 transition-opacity duration-300 pointer-events-none z-30 backdrop-blur-sm animate-bounce">
-                    เลื่อนลงเพื่อดูช่วงเวลา <i data-lucide="arrow-down" size="10" class="inline"></i>
+                <div id="scroll-hint" onclick="window.scrollToTarget()" class="fixed bottom-[calc(6rem+env(safe-area-inset-bottom))] left-1/2 -translate-x-1/2 bg-slate-800/80 text-white text-[10px] font-bold px-6 py-3 rounded-full shadow-2xl opacity-0 transition-all duration-300 pointer-events-none z-30 backdrop-blur-md flex items-center gap-2 border border-white/10 uppercase tracking-wider cursor-pointer hover:bg-slate-700 active:scale-95">
+                    <span>${text}</span>
+                    <i data-lucide="arrow-down" size="14" class="animate-bounce-slow"></i>
                 </div>
             `;
         }
@@ -773,8 +814,9 @@
                     else if (count > 0) borderClass = 'border-green-500 bg-green-50';
                 }
 
+                // Updated: Added window.saveScrollPosition() to onclick
                 daysHtml.push(`
-                    <button onclick="${available ? `window.state.selectedDate='${dateStr}'; ${isInternal ? 'window.render()' : "window.setView('public_slots')"}` : ''}" 
+                    <button onclick="${available ? `window.saveScrollPosition(); window.state.selectedDate='${dateStr}'; ${isInternal ? 'window.render()' : "window.setView('public_slots')"}` : ''}" 
                             class="aspect-square flex flex-col items-center justify-center rounded-xl transition-all border-2 ${isSelected && isInternal ? 'ring-4 ring-indigo-200 z-10' : ''} 
                             ${available ? `bg-white ${borderClass} hover:border-indigo-400 active:scale-90 shadow-sm` : 'bg-slate-50 border-transparent text-slate-300 cursor-not-allowed'}
                             ${isPast ? 'opacity-40 grayscale-[0.5]' : ''}">
@@ -785,14 +827,15 @@
                 `);
             }
 
+            // Updated: Added window.saveScrollPosition() to nav buttons
             return `
                 <div class="bg-white rounded-[2.5rem] p-6 shadow-xl border border-white">
                     <div class="flex items-center justify-between mb-6 px-2">
-                        <button onclick="window.state.calendarViewDate.setMonth(window.state.calendarViewDate.getMonth()-1); window.render();" class="p-2 hover:bg-slate-100 rounded-lg text-indigo-600"><i data-lucide="chevron-left" size="20"></i></button>
+                        <button onclick="window.saveScrollPosition(); window.state.calendarViewDate.setMonth(window.state.calendarViewDate.getMonth()-1); window.render();" class="p-2 hover:bg-slate-100 rounded-lg text-indigo-600"><i data-lucide="chevron-left" size="20"></i></button>
                         <div class="text-center">
                             <h3 class="font-black text-slate-800 text-base leading-none">${MONTHS_TH[month]} ${year + 543}</h3>
                         </div>
-                        <button onclick="window.state.calendarViewDate.setMonth(window.state.calendarViewDate.getMonth()+1); window.render();" class="p-2 hover:bg-slate-100 rounded-lg text-indigo-600"><i data-lucide="chevron-right" size="20"></i></button>
+                        <button onclick="window.saveScrollPosition(); window.state.calendarViewDate.setMonth(window.state.calendarViewDate.getMonth()+1); window.render();" class="p-2 hover:bg-slate-100 rounded-lg text-indigo-600"><i data-lucide="chevron-right" size="20"></i></button>
                     </div>
                     <div class="calendar-grid">
                         ${DAYS_TH.map(d => `<div class="text-center text-[10px] font-black text-slate-400 uppercase py-2">${d.substring(0,2)}</div>`).join('')}
@@ -965,7 +1008,7 @@
                         </div>
 
                         ${!isServiceAvailable(window.state.selectedDate) ? `<div class="p-12 bg-orange-50 rounded-[2.5rem] text-center border-2 border-dashed border-orange-200 font-bold text-orange-700 text-sm uppercase">ไม่เปิดให้บริการในวันนี้</div>` : `
-                            <div class="grid grid-cols-1 gap-2.5">
+                            <div id="slots-container" class="grid grid-cols-1 gap-2.5">
                                 ${slots.map(s => {
                                     const bOthers = window.state.bookings.find(b => b.date === window.state.selectedDate && b.slot === s.start && b.resourceId === window.state.selectedResource.id && b.studentId !== window.state.studentId);
                                     const bMine = window.state.bookings.find(b => b.date === window.state.selectedDate && b.slot === s.start && b.resourceId === window.state.selectedResource.id && b.studentId === window.state.studentId);
@@ -1075,7 +1118,7 @@
                         </div>
                     </div>
 
-                    <div class="grid grid-cols-1 gap-4">
+                    <div id="resource-list" class="grid grid-cols-1 gap-4">
                         <div class="text-[10px] font-bold text-slate-400 uppercase tracking-widest px-2 leading-none">เลือกทรัพยากรเพื่อดำเนินการจอง</div>
                         ${window.state.resources.map(res => `
                             <button onclick="window.selectResource('${res.id}', '${res.name}')" class="group bg-white p-6 rounded-[2rem] border border-slate-100 shadow-sm hover:shadow-lg hover:border-indigo-200 transition-all text-left flex items-center justify-between active:scale-[0.99] ${res.status === 'in_use' ? 'opacity-90' : ''}">
@@ -1250,10 +1293,10 @@
                                             <p class="text-[8px] text-slate-400 font-bold uppercase mt-1.5 text-left">UID: ${res.id.substring(0,6)}...</p>
                                         </div>
                                     </div>
-                                    <div class="flex gap-2 text-left">
-                                        <button onclick="window.editResource('${res.id}', '${res.name}')" class="p-3 bg-white text-slate-400 hover:text-indigo-600 rounded-xl shadow-md border border-slate-100 active:scale-90 text-center"><i data-lucide="pencil" size="18"></i></button>
-                                        <button onclick="window.openQRModal('${res.id}', '${res.name}')" class="p-3 bg-white text-indigo-600 rounded-xl shadow-md border border-slate-100 active:scale-90 text-center"><i data-lucide="qr-code" size="18"></i></button>
-                                        <button onclick="window.deleteResource('${res.id}')" class="p-3 bg-white text-red-400 rounded-xl shadow-md border border-slate-100 active:scale-90 text-center"><i data-lucide="trash-2" size="18"></i></button>
+                                    <div class="flex gap-1 text-left shrink-0">
+                                        <button onclick="window.editResource('${res.id}', '${res.name}')" class="p-2 bg-white text-slate-400 hover:text-indigo-600 rounded-xl shadow-md border border-slate-100 active:scale-90 text-center"><i data-lucide="pencil" size="16"></i></button>
+                                        <button onclick="window.openQRModal('${res.id}', '${res.name}')" class="p-2 bg-white text-indigo-600 rounded-xl shadow-md border border-slate-100 active:scale-90 text-center"><i data-lucide="qr-code" size="16"></i></button>
+                                        <button onclick="window.deleteResource('${res.id}')" class="p-2 bg-white text-red-400 rounded-xl shadow-md border border-slate-100 active:scale-90 text-center"><i data-lucide="trash-2" size="16"></i></button>
                                     </div>
                                 </div>
                             `).join('')}
@@ -1307,8 +1350,8 @@
             if (window.state.view === 'calendar' && window.state.selectedSlots.length > 0) {
                 return `
                     <div class="fixed bottom-[calc(6rem+env(safe-area-inset-bottom))] left-0 right-0 px-6 z-40 max-w-xl mx-auto animate-in slide-in-from-bottom-20 flex flex-col items-center">
-                        <button onclick="window.confirmBookingAction()" class="w-full py-5 bg-indigo-600 text-white font-black rounded-[2.5rem] shadow-2xl transition-all active:scale-95 text-lg flex items-center justify-center gap-4 border-b-8 border-indigo-900 hover:brightness-110 text-center">
-                            <i data-lucide="lock-keyhole" size="24"></i>
+                        <button onclick="window.confirmBookingAction()" class="w-full max-w-sm py-3 bg-indigo-600 text-white font-black rounded-full shadow-2xl transition-all active:scale-95 text-sm flex items-center justify-center gap-3 border-b-4 border-indigo-900 hover:brightness-110 text-center">
+                            <i data-lucide="lock-keyhole" size="18"></i>
                             ยืนยันจอง ${window.state.selectedSlots.length} ช่วงเวลา
                         </button>
                     </div>
@@ -1405,6 +1448,8 @@
         window.moveResource = moveResource;
         // New Safer View Pass Function
         window.viewPassToday = viewPassToday;
+        // New Scroll To Target
+        window.scrollToTarget = scrollToTarget;
     </script>
 </body>
 </html>
