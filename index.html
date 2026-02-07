@@ -686,9 +686,20 @@
         const delBooking = (id) => {
             const b = window.state.bookings.find(x => x.id === id);
             if (!b) return;
+            
+            const todayStr = getLocalDateString();
+
+            // NEW: Prevent cancellation if checked in (User only)
+            if (!window.state.isAdmin && (b.status === 'checked_in' || b.status === 'completed')) {
+                return window.uiAlert("ไม่สามารถยกเลิกรายการที่เช็คอินแล้วได้", "error");
+            }
+
+            // NEW: Prevent same-day cancellation (User only)
+            if (!window.state.isAdmin && b.date === todayStr) {
+                return window.uiAlert("ไม่สามารถยกเลิกการจองในวันใช้งานได้\nต้องดำเนินการล่วงหน้าอย่างน้อย 1 วัน", "error");
+            }
 
             window.saveScrollPosition();
-            const todayStr = getLocalDateString();
             const isPast = b.date < todayStr;
             const title = isPast ? "ลบประวัติ" : "ยกเลิกการจอง";
             const msg = isPast ? "ต้องการลบประวัติรายการนี้ใช่หรือไม่?" : "ต้องการยกเลิกการจองนี้ใช่หรือไม่?";
@@ -1299,6 +1310,17 @@
                                             sText = "ใช้งานเสร็จสิ้น";
                                             act = "";
                                             icon = '<i data-lucide="check-circle" size="16"></i>';
+                                        } else if (bMine.status === 'checked_in') {
+                                            btnClass = "bg-indigo-50 border-indigo-500 text-indigo-700 shadow-sm cursor-not-allowed"; 
+                                            sText = "เช็คอินแล้ว"; 
+                                            act = "window.uiAlert('ไม่สามารถยกเลิกรายการที่เช็คอินแล้วได้', 'error')"; 
+                                            icon = '<i data-lucide="user-check" size="16"></i>';
+                                        } else if (!window.state.isAdmin && window.state.selectedDate === todayStr) {
+                                            // NEW: Same-day cancellation restriction
+                                            btnClass = "bg-slate-50 border-slate-200 text-slate-400 cursor-not-allowed"; 
+                                            sText = "จองแล้ว (ยกเลิกไม่ได้)"; 
+                                            act = "window.uiAlert('ไม่สามารถยกเลิกการจองในวันใช้งานได้ (ต้องล่วงหน้า 1 วัน)', 'error')"; 
+                                            icon = '<i data-lucide="lock" size="16"></i>';
                                         } else {
                                             btnClass = "bg-green-50 border-green-500 text-green-700 shadow-sm"; 
                                             sText = "จองแล้ว (คลิกยกเลิก)"; 
